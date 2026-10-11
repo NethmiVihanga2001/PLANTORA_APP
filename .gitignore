@@ -57,3 +57,4 @@ backend/firebase-key.json
 env/
 scratch/
 
+android/build/
