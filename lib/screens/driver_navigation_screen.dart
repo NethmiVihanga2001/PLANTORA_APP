@@ -2,11 +2,10 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
-import 'package:socket_io_client/socket_io_client.dart' as IO;
 import '../theme/app_theme.dart';
-import '../config/app_config.dart';
 import '../widgets/premium_app_bar.dart';
-import '../widgets/responsive_layout.dart';
+import '../services/socket_service.dart';
+import '../services/delivery_service.dart';
 
 class DriverNavigationScreen extends StatefulWidget {
   final String orderId;
@@ -17,53 +16,49 @@ class DriverNavigationScreen extends StatefulWidget {
 }
 
 class _DriverNavigationScreenState extends State<DriverNavigationScreen> {
-  late IO.Socket _socket;
   final MapController _mapController = MapController();
   
   // Coordinates
   final LatLng _destination = const LatLng(6.9271, 79.8612);
-  LatLng _currentLocation = const LatLng(6.8649, 79.8997);
+  LatLng _currentLocation = const LatLng(6.8720, 79.8860);
   
-  Timer? _simulationTimer;
+  List<LatLng> _roadPoints = [];
+  final List<LatLng> _traveledPoints = [];
+  Timer? _driveTimer;
   bool _isNavigating = false;
+  int _step = 0;
 
   @override
   void initState() {
     super.initState();
-    _initSocket();
+    _traveledPoints.add(_currentLocation);
+    SocketService().joinOrderRoom(widget.orderId);
+    _fetchRoad();
   }
 
-  void _initSocket() {
-    _socket = IO.io(AppConfig.baseUrl, <String, dynamic>{
-      'transports': ['websocket'],
-      'autoConnect': false,
-    });
-    
-    _socket.connect();
-    
-    _socket.onConnect((_) {
-      print('Navigation Socket connected');
-      _socket.emit('join_order', widget.orderId);
-    });
-
-    _socket.onConnectError((err) => print('Navigation Socket connect error: $err'));
-    _socket.onError((err) => print('Navigation Socket error: $err'));
+  Future<void> _fetchRoad() async {
+    final points = await DeliveryService.fetchRoadRoute(_currentLocation, _destination);
+    if (mounted) {
+      setState(() {
+        _roadPoints = points;
+      });
+      if (_roadPoints.isNotEmpty) {
+        _mapController.fitCamera(CameraFit.bounds(
+          bounds: LatLngBounds.fromPoints([_currentLocation, _destination]),
+          padding: const EdgeInsets.all(50),
+        ));
+      }
+    }
   }
 
-  void _startSimulation() {
+  void _startDrive() {
+    final route = _roadPoints.isNotEmpty ? _roadPoints : [_currentLocation, _destination];
     setState(() {
       _isNavigating = true;
     });
 
-    // Simulate driver moving towards destination over ~10 steps
-    int step = 0;
-    const totalSteps = 20;
-    
-    final latStep = (_destination.latitude - _currentLocation.latitude) / totalSteps;
-    final lngStep = (_destination.longitude - _currentLocation.longitude) / totalSteps;
-
-    _simulationTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (step >= totalSteps) {
+    _driveTimer = Timer.periodic(const Duration(milliseconds: 700), (timer) {
+      if (_step >= route.length - 1) {
         timer.cancel();
         setState(() {
           _isNavigating = false;
@@ -77,29 +72,32 @@ class _DriverNavigationScreenState extends State<DriverNavigationScreen> {
         return;
       }
 
-      step++;
+      _step++;
       setState(() {
-        _currentLocation = LatLng(
-          _currentLocation.latitude + latStep,
-          _currentLocation.longitude + lngStep,
-        );
+        _currentLocation = route[_step];
+        _traveledPoints.add(_currentLocation);
       });
 
-      _mapController.move(_currentLocation, 15.0);
+      _mapController.move(_currentLocation, 15.5);
+
+      final distanceMeters = const Distance().as(LengthUnit.Meter, _currentLocation, _destination);
 
       // Emit driver location update to server
-      _socket.emit('driver_location_update', {
-        'orderId': widget.orderId,
-        'lat': _currentLocation.latitude,
-        'lng': _currentLocation.longitude,
-      });
+      SocketService().updateLocation(
+        orderId: widget.orderId,
+        lat: _currentLocation.latitude,
+        lng: _currentLocation.longitude,
+        heading: 0.0,
+        stage: 'delivering_to_customer',
+        distanceToCustomer: distanceMeters.toDouble(),
+      );
     });
   }
 
   @override
   void dispose() {
-    _simulationTimer?.cancel();
-    _socket.disconnect();
+    _driveTimer?.cancel();
+    SocketService().leaveOrderRoom(widget.orderId);
     super.dispose();
   }
 
@@ -108,7 +106,7 @@ class _DriverNavigationScreenState extends State<DriverNavigationScreen> {
     return Scaffold(
       backgroundColor: context.scaffoldBg,
       appBar: PremiumAppBar(
-        title: 'Live Navigation',
+        title: 'Live Road Navigation',
         subtitle: 'Order #${widget.orderId}',
       ),
       body: Stack(
@@ -127,25 +125,49 @@ class _DriverNavigationScreenState extends State<DriverNavigationScreen> {
                 subdomains: const ['mt0', 'mt1', 'mt2', 'mt3'],
                 userAgentPackageName: 'com.plantora.app',
               ),
+              PolylineLayer(
+                polylines: [
+                  if (_roadPoints.isNotEmpty)
+                    Polyline(
+                      points: _roadPoints,
+                      strokeWidth: 5.0,
+                      color: const Color(0xFF10B981).withValues(alpha: 0.35),
+                    ),
+                  if (_traveledPoints.length >= 2)
+                    Polyline(
+                      points: _traveledPoints,
+                      strokeWidth: 6.0,
+                      color: const Color(0xFF10B981),
+                    ),
+                ],
+              ),
               MarkerLayer(
                 markers: [
                   Marker(
                     point: _destination,
-                    width: 40,
-                    height: 40,
-                    child: const Icon(Icons.home, color: Color(0xFF10B981), size: 40),
+                    width: 44,
+                    height: 44,
+                    child: Container(
+                      decoration: const BoxDecoration(
+                        color: Colors.redAccent,
+                        shape: BoxShape.circle,
+                        boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 6)],
+                      ),
+                      child: const Icon(Icons.home_rounded, color: Colors.white, size: 24),
+                    ),
                   ),
                   Marker(
                     point: _currentLocation,
                     width: 50,
                     height: 50,
                     child: Container(
-                      decoration: const BoxDecoration(
+                      decoration: BoxDecoration(
                         color: Colors.white,
                         shape: BoxShape.circle,
-                        boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 8)],
+                        border: Border.all(color: const Color(0xFF10B981), width: 2.5),
+                        boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 8)],
                       ),
-                      child: const Center(child: Text('🚲', style: TextStyle(fontSize: 24))),
+                      child: const Center(child: Text('🛵', style: TextStyle(fontSize: 24))),
                     ),
                   ),
                 ],
@@ -165,16 +187,20 @@ class _DriverNavigationScreenState extends State<DriverNavigationScreen> {
                   child: SizedBox(
                     height: 54,
                     width: double.infinity,
-                    child: ElevatedButton(
+                    child: ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: _isNavigating ? Colors.red : const Color(0xFF10B981),
+                        backgroundColor: _isNavigating ? Colors.orange : const Color(0xFF10B981),
                         foregroundColor: Colors.white,
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                         elevation: 4,
                       ),
-                      onPressed: _isNavigating ? null : _startSimulation,
-                      child: Text(
-                        _isNavigating ? 'Navigating...' : 'Start Driving Simulation',
+                      onPressed: _isNavigating ? () {
+                        _driveTimer?.cancel();
+                        setState(() => _isNavigating = false);
+                      } : _startDrive,
+                      icon: Icon(_isNavigating ? Icons.pause_rounded : Icons.navigation_rounded),
+                      label: Text(
+                        _isNavigating ? 'Pause Navigation' : 'Drive Along Road Route',
                         style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                       ),
                     ),

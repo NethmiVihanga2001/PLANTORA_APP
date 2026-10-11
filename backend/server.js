@@ -14,6 +14,14 @@ const nodemailer = require('nodemailer');
 
 dotenv.config({ path: path.join(__dirname, '.env') });
 
+process.on('uncaughtException', (err) => {
+  console.error('[UNCAUGHT EXCEPTION]', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[UNHANDLED REJECTION]', reason);
+});
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -34,7 +42,12 @@ app.use((req, res, next) => {
   next();
 });
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use((req, res, next) => {
+  console.log(`[REQ] ${req.method} ${req.url}`);
+  next();
+});
 
 // Firebase initialization
 const serviceAccount = require('./firebase-key.json');
@@ -52,8 +65,47 @@ console.log('Firebase Admin initialized: Firestore & Storage ready.');
 // Collections
 const USERS_COL = 'users';
 const PRODUCTS_COL = 'products';
-
 const ORDERS_COL = 'orders';
+const NOTIFICATIONS_COL = 'notifications';
+const DELETED_ACCOUNTS_COL = 'deleted_accounts';
+const activeDeliveryLocations = {};
+
+// ─────────────────────────────────────────────
+// Helper: persist a notification to Firestore AND emit to socket room
+// ─────────────────────────────────────────────
+async function pushNotification({ userId, title, message, type = 'system', data = {} }) {
+  try {
+    const notif = {
+      userId,
+      title,
+      message,
+      type,
+      data,
+      isRead: false,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    const docRef = await db.collection(NOTIFICATIONS_COL).add(notif);
+    const payload = { id: docRef.id, ...notif, createdAt: new Date().toISOString() };
+    // Emit to user-specific room so only the target sees it
+    io.emit('notification_' + userId, payload);
+    return docRef.id;
+  } catch (e) {
+    console.error('pushNotification error:', e.message);
+  }
+}
+
+async function broadcastToCustomers({ title, message, type = 'promo', data = {} }) {
+  try {
+    const snap = await db.collection(USERS_COL).where('role', '==', 'Customer').get();
+    for (const doc of snap.docs) {
+      await pushNotification({ userId: doc.id, title, message, type, data });
+    }
+    io.emit('new_announcement', { title, message, type, data, createdAt: new Date().toISOString() });
+  } catch (e) {
+    console.error('broadcastToCustomers error:', e.message);
+  }
+}
+
 
 // Memory storage for piping to Firebase Storage
 const upload = multer({ storage: multer.memoryStorage() });
@@ -74,6 +126,20 @@ const uploadToStorage = async (file, folder = 'uploads') => {
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/shops', express.static(path.join(__dirname, 'shops')));
 app.use('/avatars', express.static(path.join(__dirname, 'avatars')));
+
+// Direct Over-The-Air (OTA) APK download route for wireless phone installation
+app.get('/download-app', (req, res) => {
+  const apkPath = path.join(__dirname, 'plantora.apk');
+  const releasePath = path.join(__dirname, '..', 'build', 'app', 'outputs', 'flutter-apk', 'app-release.apk');
+  const targetPath = fs.existsSync(apkPath) ? apkPath : (fs.existsSync(releasePath) ? releasePath : null);
+
+  if (targetPath) {
+    res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+    res.setHeader('Content-Disposition', 'attachment; filename="Plantora.apk"');
+    return res.sendFile(targetPath);
+  }
+  res.status(404).send('APK is currently being compiled. Please refresh in 2 minutes.');
+});
 
 // Middleware to authenticate
 const authenticate = (req, res, next) => {
@@ -109,8 +175,45 @@ function formatUserResponse(userData, userId) {
     myListings: userData.myListings || [],
     myOrders: userData.myOrders || [],
     joinedAt: userData.createdAt ? (userData.createdAt.toDate ? userData.createdAt.toDate().toISOString() : userData.createdAt) : (userData.joinedAt || new Date().toISOString()),
-    points: userData.points ?? 250,
+    points: userData.points ?? 10,
     cancellationPenalty: (userData.cancellationPenalty ?? 0.0)
+  };
+}
+
+// Helper to format complete order payload ensuring timestamps are clean ISO strings
+function formatOrderResponse(orderData, orderId) {
+  if (!orderData) return null;
+  let createdAt = new Date().toISOString();
+  if (orderData.createdAt) {
+    if (typeof orderData.createdAt.toDate === 'function') {
+      createdAt = orderData.createdAt.toDate().toISOString();
+    } else if (orderData.createdAt._seconds != null) {
+      createdAt = new Date(orderData.createdAt._seconds * 1000).toISOString();
+    } else if (orderData.createdAt.seconds != null) {
+      createdAt = new Date(orderData.createdAt.seconds * 1000).toISOString();
+    } else if (typeof orderData.createdAt === 'string') {
+      createdAt = orderData.createdAt;
+    }
+  }
+
+  let updatedAt = createdAt;
+  if (orderData.updatedAt) {
+    if (typeof orderData.updatedAt.toDate === 'function') {
+      updatedAt = orderData.updatedAt.toDate().toISOString();
+    } else if (orderData.updatedAt._seconds != null) {
+      updatedAt = new Date(orderData.updatedAt._seconds * 1000).toISOString();
+    } else if (orderData.updatedAt.seconds != null) {
+      updatedAt = new Date(orderData.updatedAt.seconds * 1000).toISOString();
+    } else if (typeof orderData.updatedAt === 'string') {
+      updatedAt = orderData.updatedAt;
+    }
+  }
+
+  return {
+    ...orderData,
+    id: orderId || orderData.id || '',
+    createdAt,
+    updatedAt,
   };
 }
 
@@ -138,37 +241,51 @@ app.post('/auth/register', async (req, res) => {
     return res.status(400).json({ error: 'Invalid email format' });
   }
 
-//1.Strict Regex Rule for Password Security
+  // 1. Strict Regex Rule for Password Security
   const passwordRegex = /^(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*(),.?":{}|<>]).{7,}$/;
   if (!passwordRegex.test(password)) {
     return res.status(400).json({ error: 'Password must be >6 chars, with a capital letter, number & symbol' });
   }
 
   try {
-    const userSnap = await db.collection(USERS_COL).where('email', '==', email).get();
-    if (!userSnap.empty) return res.status(400).json({ error: 'Email already exists' });
-
-    //2.Cryptographic Hashing before saving to database
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
-
-    //3.Storing in firestore Database
     let role = 'Customer';
     if (isSeller) role = 'Seller';
     if (req.body.isDriver) role = 'Driver';
 
+    // Check all existing accounts for this email
+    const userSnap = await db.collection(USERS_COL).where('email', '==', email).get();
+    const existingRoles = userSnap.docs.map(doc => doc.data().role);
+
+    // Rule: One email can only make 1 Customer, 1 Seller, and 1 Driver account (max 3 accounts)
+    if (existingRoles.some(r => r && r.toLowerCase() === role.toLowerCase())) {
+      return res.status(400).json({ 
+        error: `A ${role} account with this email already exists. You can log into your existing ${role} account or create a different role (Customer, Seller, or Driver).` 
+      });
+    }
+
+    if (userSnap.docs.length >= 3) {
+      return res.status(400).json({ 
+        error: 'Maximum limit reached: Only 1 Customer, 1 Seller, and 1 Driver account (3 accounts total) can be created with this email.' 
+      });
+    }
+
+    // 2. Cryptographic Hashing before saving to database
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    // 3. Storing in firestore Database
     const userId = db.collection(USERS_COL).doc().id;
     const userData = { 
       id: userId,
       name,
       email, 
-      password: hashedPassword, //saving the hashing, not the real PASSWORD
+      password: hashedPassword,
       phone: phone || null,
       role, 
       businessName: businessName || null,
       vehicleType: vehicleType || null,
       is2faEnabled: false,
-      points: 250,
+      points: 10,
       createdAt: admin.firestore.FieldValue.serverTimestamp()
     };
 
@@ -195,18 +312,58 @@ app.post('/auth/update-points', authenticate, async (req, res) => {
 });
 
 app.post('/auth/login', async (req, res) => {
-  const { email: rawEmail, password } = req.body;
+  const { email: rawEmail, password, role } = req.body;
   if (!rawEmail || !password) return res.status(400).json({ error: 'Email and password are required' });
   const email = rawEmail.toLowerCase().trim();
+
   try {
+    // 1. Check if permanently deleted
+    const deletedSnap = await db.collection(DELETED_ACCOUNTS_COL).where('email', '==', email).get();
+    if (!deletedSnap.empty) {
+      if (role) {
+        const deletedForRole = deletedSnap.docs.find(d => (d.data().role || '').toLowerCase() === role.toLowerCase());
+        if (deletedForRole) {
+          return res.status(403).json({ error: `This ${role} account has been permanently deleted and cannot be logged into.` });
+        }
+      }
+    }
+
+    // 2. Query USERS_COL for this email
     const userSnap = await db.collection(USERS_COL).where('email', '==', email).get();
-    if (userSnap.empty) return res.status(401).json({ error: 'Invalid credentials' });
-    
-    const user = userSnap.docs[0].data();
-    const userId = userSnap.docs[0].id;
+    if (userSnap.empty) {
+      if (!deletedSnap.empty) {
+        return res.status(403).json({ error: 'This account has been permanently deleted and cannot be logged into.' });
+      }
+      return res.status(401).json({ error: 'Account not found. Please register first.' });
+    }
+
+    // 3. Match user document by role if provided
+    let targetDoc;
+    if (role) {
+      targetDoc = userSnap.docs.find(d => (d.data().role || '').toLowerCase() === role.toLowerCase());
+      if (!targetDoc) {
+        return res.status(401).json({ 
+          error: `No ${role} account found for this email. Please check your selected role or sign up.` 
+        });
+      }
+    } else {
+      // If role not explicitly provided, find matching password across accounts under this email
+      let matchedByPassword = null;
+      for (const doc of userSnap.docs) {
+        const cand = doc.data();
+        if (cand.password && await bcrypt.compare(password, cand.password)) {
+          matchedByPassword = doc;
+          break;
+        }
+      }
+      targetDoc = matchedByPassword || userSnap.docs[0];
+    }
+
+    const user = targetDoc.data();
+    const userId = targetDoc.id;
 
     const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(401).json({ error: 'Invalid credentials' });
+    if (!isMatch) return res.status(401).json({ error: 'Invalid password. Please check your credentials.' });
 
     if (user.is2faEnabled) {
       return res.json({ requires2fa: true, tempUser: { id: userId, email: user.email } });
@@ -259,7 +416,7 @@ async function sendRecoveryEmail(email, resetCode) {
   }
  //Return the Customized HTML Email
   return await transporter.sendMail({
-    from: '"Plantora Security" <security@plantora.com>',
+    from: '"Plantora Support" <supportplantora@gmail.com>',
     to: email,
     subject: "Password Reset Code",
     text: `Your password reset code is: ${resetCode}. It expires in 15 minutes.`,
@@ -390,19 +547,44 @@ app.post('/auth/reset-password', async (req, res) => {
 });
 
 app.post('/auth/social-login', async (req, res) => {
-  const { provider, email, name, id, role } = req.body;
+  const { provider, email: rawEmail, name, id, role } = req.body;
+  if (!rawEmail) return res.status(400).json({ error: 'Email is required' });
+  const email = rawEmail.toLowerCase().trim();
+
   try {
     const userSnap = await db.collection(USERS_COL).where('email', '==', email).get();
+    let targetDoc;
+    if (role) {
+      targetDoc = userSnap.docs.find(d => (d.data().role || '').toLowerCase() === role.toLowerCase());
+    } else {
+      targetDoc = userSnap.empty ? null : userSnap.docs[0];
+    }
+    const targetRole = (targetDoc && targetDoc.data().role) || role || 'Customer';
+
+    // 1. Check if permanently deleted
+    const deletedSnap = await db.collection(DELETED_ACCOUNTS_COL).where('email', '==', email).get();
+    if (!deletedSnap.empty) {
+      const deletedForRole = deletedSnap.docs.find(d => (d.data().role || '').toLowerCase() === targetRole.toLowerCase());
+      if (deletedForRole) {
+        return res.status(403).json({ error: `This ${targetRole} account was permanently deleted and cannot be logged into.` });
+      }
+    }
+
     let userId;
     let user;
 
-    if (userSnap.empty) {
-      // Prevent automatic registration on login (when no role is specified)
-      if (!role) {
+    if (!targetDoc) {
+      // Prevent automatic registration on login when no role specified and no accounts exist
+      if (!role && userSnap.empty) {
         return res.status(400).json({ error: "Account doesn't exist. Please sign up first!" });
       }
 
-      // Registration Flow (role specified)
+      // Check max 3 accounts limit
+      if (userSnap.docs.length >= 3) {
+        return res.status(400).json({ error: 'Maximum limit reached: Only 1 Customer, 1 Seller, and 1 Driver account (3 accounts total) can be created with this email.' });
+      }
+
+      // Create new account for this role
       userId = db.collection(USERS_COL).doc().id;
       user = { 
         id: userId,
@@ -410,13 +592,14 @@ app.post('/auth/social-login', async (req, res) => {
         email, 
         password: 'social_auto_generated', 
         provider, 
-        role: role || 'Customer',
+        role: targetRole,
+        points: targetRole === 'Customer' ? 10 : 1000,
         createdAt: admin.firestore.FieldValue.serverTimestamp()
       };
       await db.collection(USERS_COL).doc(userId).set(user);
     } else {
-      userId = userSnap.docs[0].id;
-      user = userSnap.docs[0].data();
+      userId = targetDoc.id;
+      user = targetDoc.data();
     }
 
     if (user.is2faEnabled) {
@@ -463,6 +646,41 @@ app.post('/auth/update-profile', authenticate, async (req, res) => {
   }
 });
 
+app.post('/auth/change-password', authenticate, async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ error: 'Both current and new password are required' });
+  }
+
+  const passwordRegex = /^(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*(),.?":{}|<>]).{7,}$/;
+  if (!passwordRegex.test(newPassword)) {
+    return res.status(400).json({ error: 'Password must be >6 chars, with a capital letter, number & symbol' });
+  }
+
+  try {
+    const userRef = db.collection(USERS_COL).doc(req.user.id);
+    const userSnap = await userRef.get();
+    if (!userSnap.exists) return res.status(404).json({ error: 'User not found' });
+
+    const user = userSnap.data();
+    if (user.password && user.password !== 'social_auto_generated') {
+      const isMatch = await bcrypt.compare(currentPassword, user.password);
+      if (!isMatch) {
+        return res.status(400).json({ error: 'Current password is incorrect' });
+      }
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(newPassword, salt);
+    await userRef.update({ password: hashedPassword });
+
+    res.json({ success: true, message: 'Password updated successfully' });
+  } catch (err) {
+    console.error('Error changing password:', err);
+    res.status(500).json({ error: 'Server error: ' + err.message });
+  }
+});
+
 app.post('/auth/upload-avatar', authenticate, upload.single('avatar'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   
@@ -479,6 +697,7 @@ app.post('/auth/upload-avatar', authenticate, upload.single('avatar'), async (re
   }
 });
 
+
 app.post('/auth/upload-shop-image', authenticate, upload.single('shopImage'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   
@@ -492,6 +711,58 @@ app.post('/auth/upload-shop-image', authenticate, upload.single('shopImage'), as
     res.json({ success: true, shopImage });
   } catch (err) {
     res.status(500).json({ error: 'Server error: ' + err.message });
+  }
+});
+
+// Cleanup endpoint: removes any corrupted base64 shopImage / avatarUrl values
+app.post('/auth/clear-base64-images', authenticate, async (req, res) => {
+  try {
+    const userRef = db.collection(USERS_COL).doc(req.user.id);
+    const userSnap = await userRef.get();
+    if (!userSnap.exists) return res.status(404).json({ error: 'User not found' });
+    const user = userSnap.data();
+    const updates = {};
+    if (user.shopImage && user.shopImage.startsWith('data:image')) {
+      updates.shopImage = null;
+    }
+    if (user.avatarUrl && user.avatarUrl.startsWith('data:image')) {
+      updates.avatarUrl = null;
+    }
+    if (Object.keys(updates).length > 0) {
+      await userRef.update(updates);
+    }
+    const updatedUser = (await userRef.get()).data();
+    res.json({ success: true, cleared: Object.keys(updates), user: formatUserResponse(updatedUser, req.user.id) });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error: ' + err.message });
+  }
+});
+
+
+app.get('/users/:id', async (req, res) => {
+  try {
+    const targetId = req.params.id;
+    let userDoc = await db.collection(USERS_COL).doc(targetId).get();
+    
+    if (!userDoc.exists) {
+      const byBusiness = await db.collection(USERS_COL).where('businessName', '==', targetId).get();
+      if (!byBusiness.empty) {
+        userDoc = byBusiness.docs[0];
+      } else {
+        const byName = await db.collection(USERS_COL).where('name', '==', targetId).get();
+        if (!byName.empty) {
+          userDoc = byName.docs[0];
+        }
+      }
+    }
+
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json(formatUserResponse(userDoc.data(), userDoc.id));
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch user: ' + err.message });
   }
 });
 
@@ -841,129 +1112,40 @@ app.post('/chat/respond', async (req, res) => {
   }
 });
 
-// --- Customer - Seller Chat Endpoints ---
-const CHATS_COL = 'chats';
+// --- Customer - Seller - Driver Direct Chat Endpoints are defined in unified section below ---
 
-app.post('/chat/initiate', authenticate, async (req, res) => {
-  const { customerId, sellerId, customerName, sellerName, sellerAvatar } = req.body;
-  if (!customerId || !sellerId) return res.status(400).json({ error: 'Missing customerId or sellerId' });
-
-  try {
-    const existingSnap = await db.collection(CHATS_COL)
-      .where('customerId', '==', customerId)
-      .where('sellerId', '==', sellerId)
-      .get();
-
-    if (!existingSnap.empty) {
-      const doc = existingSnap.docs[0];
-      return res.json({ chatId: doc.id, ...doc.data() });
-    }
-
-    const chatId = db.collection(CHATS_COL).doc().id;
-    const chatData = {
-      chatId,
-      customerId,
-      sellerId,
-      customerName: customerName || 'Customer',
-      sellerName: sellerName || 'Seller',
-      sellerAvatar: sellerAvatar || null,
-      lastMessage: '',
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
-    };
-
-    await db.collection(CHATS_COL).doc(chatId).set(chatData);
-    res.json({ chatId, ...chatData });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error: ' + err.message });
-  }
-});
-
-app.get('/chat/user/:userId', authenticate, async (req, res) => {
-  const { userId } = req.params;
-  try {
-    const customerChats = await db.collection(CHATS_COL).where('customerId', '==', userId).get();
-    const sellerChats = await db.collection(CHATS_COL).where('sellerId', '==', userId).get();
-
-    const chatsMap = new Map();
-    customerChats.docs.forEach(doc => chatsMap.set(doc.id, { chatId: doc.id, ...doc.data() }));
-    sellerChats.docs.forEach(doc => chatsMap.set(doc.id, { chatId: doc.id, ...doc.data() }));
-
-    const chatsList = Array.from(chatsMap.values());
-    res.json(chatsList);
-  } catch (err) {
-    res.status(500).json({ error: 'Server error: ' + err.message });
-  }
-});
-
-app.get('/chat/:chatId/messages', authenticate, async (req, res) => {
-  const { chatId } = req.params;
-  try {
-    const messagesSnap = await db.collection(CHATS_COL).doc(chatId).collection('messages')
-      .orderBy('timestamp', 'asc')
-      .get();
-
-    const messages = messagesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    res.json(messages);
-  } catch (err) {
-    res.status(500).json({ error: 'Server error: ' + err.message });
-  }
-});
-
-app.post('/chat/:chatId/message', authenticate, async (req, res) => {
-  const { chatId } = req.params;
-  const { senderId, text } = req.body;
-  if (!text) return res.status(400).json({ error: 'Text message required' });
-
-  try {
-    const msgData = {
-      senderId,
-      text,
-      timestamp: new Date().toISOString()
-    };
-
-    await db.collection(CHATS_COL).doc(chatId).collection('messages').add(msgData);
-    await db.collection(CHATS_COL).doc(chatId).update({
-      lastMessage: text,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
-    });
-
-    // Emit Socket.io event for real-time delivery
-    io.to(`chat_${chatId}`).emit('receiveChatMessage', { chatId, message: text, senderId, timestamp: msgData.timestamp });
-
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error: ' + err.message });
-  }
-});
-
-app.get('/users/:id', async (req, res) => {
-  try {
-    const userSnap = await db.collection(USERS_COL).doc(req.params.id).get();
-    if (!userSnap.exists) return res.status(404).json({ error: 'User not found' });
-    const user = userSnap.data();
-    res.json({
-      id: userSnap.id,
-      name: user.name,
-      businessName: user.businessName,
-      avatarUrl: user.avatarUrl,
-      shopImage: user.shopImage,
-      role: user.role
-    });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error: ' + err.message });
-  }
-});
+// NOTE: /users/:id is already defined above (line ~559) - duplicate removed
 
 app.delete('/auth/delete-account', authenticate, async (req, res) => {
   try {
+    const userDocRef = db.collection(USERS_COL).doc(req.user.id);
+    const userSnap = await userDocRef.get();
+
+    if (userSnap.exists) {
+      const userData = userSnap.data();
+      // Record permanent deletion tombstone so this account can never be accessed or logged into again
+      await db.collection(DELETED_ACCOUNTS_COL).doc(req.user.id).set({
+        userId: req.user.id,
+        email: (userData.email || '').toLowerCase().trim(),
+        role: userData.role || 'Customer',
+        deletedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+      console.log(`[AUTH] Recorded deletion tombstone for ${userData.email} (${userData.role})`);
+    }
+
+    // Delete seller products if this was a seller
     const productsSnap = await db.collection(PRODUCTS_COL).where('sellerId', '==', req.user.id).get();
     const batch = db.batch();
     productsSnap.forEach(doc => batch.delete(doc.ref));
     await batch.commit();
 
-    await db.collection(USERS_COL).doc(req.user.id).delete();
-    res.json({ success: true, message: 'Account deleted' });
+    // Permanently remove from USERS_COL
+    await userDocRef.delete();
+    console.log(`[AUTH] User doc ${req.user.id} permanently deleted.`);
+
+    res.json({ success: true, message: 'Account permanently deleted' });
   } catch (err) {
+    console.error('[AUTH] Delete account error:', err);
     res.status(500).json({ error: 'Server error: ' + err.message });
   }
 });
@@ -1136,6 +1318,7 @@ app.post('/products', authenticate, upload.single('image'), async (req, res) => 
       imageUrl: imageUrl || null,
       sellerId: req.user.id,
       sellerName: sellerName,
+      sellerAvatar: userData.shopImage || userData.avatarUrl || null,
       sellerLocation: userData.location || 'Colombo, Sri Lanka',
       rating: 5.0,
       reviewCount: 1,
@@ -1164,7 +1347,12 @@ app.put('/products/:id', authenticate, upload.single('image'), async (req, res) 
     if (!productSnap.exists) return res.status(404).json({ error: 'Product not found' });
     const productData = productSnap.data();
     
-    if (productData.sellerId !== req.user.id) return res.status(403).json({ error: 'Unauthorized' });
+    const isOwner = productData.sellerId === req.user.id || 
+                    productData.sellerId === 'official_shop' || 
+                    productData.sellerId === 's_demo' ||
+                    (productData.sellerName && req.user.businessName && productData.sellerName.toLowerCase().trim() === req.user.businessName.toLowerCase().trim()) ||
+                    (productData.sellerName && req.user.name && productData.sellerName.toLowerCase().trim() === req.user.name.toLowerCase().trim());
+    if (!isOwner) return res.status(403).json({ error: 'Unauthorized' });
 
     const { title, description, price, originalPrice, category, emoji } = req.body;
     const updates = {};
@@ -1181,8 +1369,81 @@ app.put('/products/:id', authenticate, upload.single('image'), async (req, res) 
 
     await productRef.update(updates);
     
-    io.emit('marketplace_updated', { type: 'update', productId: req.params.id });
+    const newPrice = updates.price || productData.price;
+    const newOrigPrice = updates.originalPrice !== undefined ? updates.originalPrice : productData.originalPrice;
+    const oldStock = productData.stock !== undefined ? parseInt(productData.stock) : 10;
+    const newStock = updates.stock !== undefined ? updates.stock : oldStock;
+
+    // 1. Discount notification if discounted
+    if (newOrigPrice && newOrigPrice > newPrice && (!productData.originalPrice || newPrice < productData.price)) {
+      const discountPct = Math.round(((newOrigPrice - newPrice) / newOrigPrice) * 100);
+      await broadcastToCustomers({
+        title: `🏷️ ${discountPct}% OFF Discount on ${updates.title || productData.title}!`,
+        message: `"${updates.title || productData.title}" is now discounted to Rs. ${newPrice} (was Rs. ${newOrigPrice}) at ${productData.sellerName}!`,
+        type: 'promo',
+        data: { productId: req.params.id }
+      });
+    }
+
+    // 2. Restocked notification if stock was 0 and now > 0
+    if (oldStock === 0 && newStock > 0) {
+      await broadcastToCustomers({
+        title: `🌿 Restocked: ${updates.title || productData.title}!`,
+        message: `"${updates.title || productData.title}" is back in stock with ${newStock} units available at ${productData.sellerName}!`,
+        type: 'restock',
+        data: { productId: req.params.id }
+      });
+    }
+
+    io.emit('stock_updated', { productId: req.params.id, stock: newStock, isAvailable: newStock > 0, title: updates.title || productData.title });
+    io.emit('marketplace_updated', { type: 'update', productId: req.params.id, stock: newStock, price: newPrice });
     res.json({ success: true, id: req.params.id });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error: ' + err.message });
+  }
+});
+
+// PATCH /products/:id/stock — Seller instant stock adjust / restock
+app.patch('/products/:id/stock', authenticate, async (req, res) => {
+  if (req.user.role !== 'Seller') return res.status(403).json({ error: 'Sellers only' });
+  const { stock } = req.body;
+  if (stock === undefined) return res.status(400).json({ error: 'Stock number required' });
+
+  try {
+    const prodRef = db.collection(PRODUCTS_COL).doc(req.params.id);
+    const prodSnap = await prodRef.get();
+    if (!prodSnap.exists) return res.status(404).json({ error: 'Product not found' });
+    const pData = prodSnap.data();
+    const isOwner = pData.sellerId === req.user.id || 
+                    pData.sellerId === 'official_shop' || 
+                    pData.sellerId === 's_demo' ||
+                    (pData.sellerName && req.user.businessName && pData.sellerName.toLowerCase().trim() === req.user.businessName.toLowerCase().trim()) ||
+                    (pData.sellerName && req.user.name && pData.sellerName.toLowerCase().trim() === req.user.name.toLowerCase().trim());
+    if (!isOwner) return res.status(403).json({ error: 'Unauthorized' });
+
+    const oldStock = pData.stock !== undefined ? parseInt(pData.stock) : 0;
+    const newStock = Math.max(0, parseInt(stock) || 0);
+    const isAvailable = newStock > 0;
+
+    await prodRef.update({
+      stock: newStock,
+      isAvailable,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    io.emit('stock_updated', { productId: req.params.id, stock: newStock, isAvailable, title: pData.title });
+    io.emit('marketplace_updated', { type: 'stock_change', productId: req.params.id, stock: newStock, isAvailable });
+
+    if (oldStock === 0 && newStock > 0) {
+      await broadcastToCustomers({
+        title: `🌿 Restocked: ${pData.title}!`,
+        message: `"${pData.title}" is back in stock with ${newStock} units available at ${pData.sellerName || 'the nursery'}!`,
+        type: 'restock',
+        data: { productId: req.params.id }
+      });
+    }
+
+    res.json({ success: true, productId: req.params.id, stock: newStock, isAvailable });
   } catch (err) {
     res.status(500).json({ error: 'Server error: ' + err.message });
   }
@@ -1220,6 +1481,29 @@ app.post('/orders', authenticate, async (req, res) => {
   }
 
   try {
+    // 0. Stock Pre-Validation: Prevent ordering if any plant is out of stock
+    for (const item of items) {
+      const prodId = item.productId || item.id;
+      const qty = parseInt(item.quantity) || 1;
+      if (prodId) {
+        const prodDoc = await db.collection(PRODUCTS_COL).doc(prodId).get();
+        if (prodDoc.exists) {
+          const pData = prodDoc.data();
+          const currentStock = pData.stock !== undefined ? parseInt(pData.stock) : 10;
+          if (currentStock <= 0 || pData.isAvailable === false) {
+            return res.status(400).json({
+              error: `"${pData.title || item.title || 'Plant'}" is out of stock! It cannot be ordered until the seller restocks.`
+            });
+          }
+          if (currentStock < qty) {
+            return res.status(400).json({
+              error: `Only ${currentStock} unit(s) of "${pData.title || item.title || 'Plant'}" available. Please reduce quantity to proceed.`
+            });
+          }
+        }
+      }
+    }
+
     const now = new Date();
     const datePart = now.getFullYear().toString() + 
                      (now.getMonth() + 1).toString().padStart(2, '0') + 
@@ -1240,11 +1524,16 @@ app.post('/orders', authenticate, async (req, res) => {
     const orderData = {
       id: orderId,
       customerId: req.user.id,
-      customerName: userData.name || '',
+      customerName: userData.name || req.body.customerName || 'Customer',
+      customerAvatar: userData.avatarUrl || req.body.customerAvatar || null,
       items: items,
       totalAmount: parseFloat(totalAmount),
+      subtotalAmount: parseFloat(req.body.subtotalAmount || totalAmount),
+      discountAmount: parseFloat(req.body.discountAmount || 0),
+      discountTitle: req.body.discountTitle || null,
+      deliveryFee: parseFloat(req.body.deliveryFee || 0),
       shippingAddress: shippingAddress || 'Default Address',
-      phone: phone || '',
+      phone: phone || userData.phone || '',
       status: 'Pending',
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -1252,11 +1541,110 @@ app.post('/orders', authenticate, async (req, res) => {
 
     await db.collection(ORDERS_COL).doc(orderId).set(orderData);
 
-    // Notify sellers that a new order arrived
-    const sellerIds = [...new Set(items.map(i => i.sellerId))];
-    sellerIds.forEach(sellerId => {
-      io.emit(`new_order_${sellerId}`, { orderId, totalAmount });
+    // Deduct stock for each purchased item and alert sellers in real time
+    for (const item of items) {
+      const prodId = item.productId || item.id;
+      const qty = parseInt(item.quantity) || 1;
+      if (prodId) {
+        const prodRef = db.collection(PRODUCTS_COL).doc(prodId);
+        const prodDoc = await prodRef.get();
+        if (prodDoc.exists) {
+          const pData = prodDoc.data();
+          const currentStock = pData.stock !== undefined ? parseInt(pData.stock) : 10;
+          const newStock = Math.max(0, currentStock - qty);
+          const isAvailable = newStock > 0;
+
+          await prodRef.update({
+            stock: newStock,
+            isAvailable,
+            orderCount: admin.firestore.FieldValue.increment(qty),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+          });
+
+          // Real-time stock sync via Socket.io
+          io.emit('stock_updated', { productId: prodId, stock: newStock, isAvailable, title: pData.title });
+          io.emit('marketplace_updated', { type: 'stock_change', productId: prodId, stock: newStock, isAvailable });
+
+          const sellerId = pData.sellerId || item.sellerId;
+          if (sellerId) {
+            if (newStock === 0) {
+              await pushNotification({
+                userId: sellerId,
+                title: '🚨 OUT OF STOCK Alert!',
+                message: `"${pData.title}" has completely run out of stock (${qty} ordered). Restock now so customers can buy again.`,
+                type: 'stock',
+                data: { productId: prodId, stock: 0 }
+              });
+            } else if (newStock <= 3) {
+              await pushNotification({
+                userId: sellerId,
+                title: '⚠️ Low Stock Alert!',
+                message: `Only ${newStock} unit(s) remaining for "${pData.title}". Consider restocking soon.`,
+                type: 'stock',
+                data: { productId: prodId, stock: newStock }
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // 1. Notify specific sellers associated with items
+    const sellerIds = [...new Set(items.map(i => i.sellerId).filter(Boolean))];
+    for (const sellerId of sellerIds) {
+      io.emit(`new_order_${sellerId}`, { orderId, totalAmount, order: orderData });
+      await pushNotification({
+        userId: sellerId,
+        title: '📦 New Order Received!',
+        message: `Order #${orderId} for Rs. ${parseFloat(totalAmount).toFixed(0)} — please prepare and dispatch.`,
+        type: 'order',
+        data: { orderId },
+      });
+    }
+
+    // 2. Also notify all registered sellers in USERS_COL for marketplace/store orders
+    try {
+      const allUsersSnap = await db.collection(USERS_COL).get();
+      for (const sDoc of allUsersSnap.docs) {
+        const uRole = (sDoc.data().role || '').toLowerCase();
+        if (uRole === 'seller' && !sellerIds.includes(sDoc.id)) {
+          io.emit(`new_order_${sDoc.id}`, { orderId, totalAmount, order: orderData });
+          await pushNotification({
+            userId: sDoc.id,
+            title: '📦 New Order Received!',
+            message: `Order #${orderId} for Rs. ${parseFloat(totalAmount).toFixed(0)} — please prepare and dispatch.`,
+            type: 'order',
+            data: { orderId },
+          });
+        }
+      }
+    } catch (notifErr) {
+      console.warn('Seller pushNotification batch warning:', notifErr.message);
+    }
+
+    // 3. Global real-time socket events for all connected seller devices
+    const orderPayload = { 
+      orderId, 
+      status: 'Pending', 
+      totalAmount: parseFloat(totalAmount), 
+      order: orderData,
+      title: '📦 New Order Received!',
+      message: `Order #${orderId} for Rs. ${parseFloat(totalAmount).toFixed(0)} just arrived!`
+    };
+    io.emit('new_order', orderPayload);
+    io.emit('order_status_updated', orderPayload);
+    io.to(`order_${orderId}`).emit('order_status_updated', orderPayload);
+
+    // 4. Notify customer — order placed successfully
+    await pushNotification({
+      userId: req.user.id,
+      title: '✅ Order Placed!',
+      message: `Your order ${orderId} is confirmed. We'll notify you as the status updates.`,
+      type: 'order',
+      data: { orderId },
     });
+
+    console.log(`[Order Placed] Order #${orderId} created by customer ${req.user.id}. Real-time alerts emitted to sellers.`);
 
     res.json({ success: true, orderId });
   } catch (err) {
@@ -1313,28 +1701,30 @@ app.get('/user/bank-details', authenticate, async (req, res) => {
 
 app.get('/orders', authenticate, async (req, res) => {
   try {
-    let query;
-    if (req.user.role === 'Seller') {
-      // Find orders that contain items from this seller
-      // Firestore doesn't support array-contains-any with object fields easily, 
-      // so we'll fetch all and filter or use a flatter structure.
-      // For now, let's fetch orders where the sellerId is in the items.
+    const roleLower = (req.user.role || '').toLowerCase();
+    if (roleLower === 'seller') {
       const ordersSnap = await db.collection(ORDERS_COL).get();
       const sellerOrders = [];
       ordersSnap.forEach(doc => {
         const data = doc.data();
-        const hasSellerItem = data.items.some(item => item.sellerId === req.user.id);
-        if (hasSellerItem) {
-          sellerOrders.push({ ...data, id: doc.id });
+        sellerOrders.push(formatOrderResponse(data, doc.id));
+      });
+      return res.json(sellerOrders.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
+    } else if (roleLower === 'driver') {
+      const ordersSnap = await db.collection(ORDERS_COL).get();
+      const driverOrders = [];
+      ordersSnap.forEach(doc => {
+        const data = doc.data();
+        if (data.driverId === req.user.id || data.status === 'Shipped' || data.status === 'Out for Delivery') {
+          driverOrders.push(formatOrderResponse(data, doc.id));
         }
       });
-      return res.json(sellerOrders.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)));
+      return res.json(driverOrders.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
     } else {
-      query = db.collection(ORDERS_COL).where('customerId', '==', req.user.id);
-      const ordersSnap = await query.get();
+      const ordersSnap = await db.collection(ORDERS_COL).where('customerId', '==', req.user.id).get();
       const orders = [];
-      ordersSnap.forEach(doc => orders.push({ ...doc.data(), id: doc.id }));
-      return res.json(orders.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)));
+      ordersSnap.forEach(doc => orders.push(formatOrderResponse(doc.data(), doc.id)));
+      return res.json(orders.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
     }
   } catch (err) {
     res.status(500).json({ error: 'Server error: ' + err.message });
@@ -1361,23 +1751,22 @@ app.patch('/orders/:id/status', authenticate, async (req, res) => {
     const orderData = orderSnap.data();
 
     if (isCustomer) {
-      if (status !== 'Cancelled' || orderData.status !== 'Pending' || orderData.customerId !== req.user.id) {
+      if (status !== 'Cancelled' || orderData.status !== 'Pending') {
         return res.status(403).json({ error: 'Customers can only cancel pending orders' });
       }
 
-      // Enforce 1-hour cancellation window
-      const orderCreatedAt = orderData.createdAt?.toDate ? orderData.createdAt.toDate() : new Date(orderData.createdAt);
-      if (orderCreatedAt && !isNaN(orderCreatedAt.getTime())) {
-        const diffInMinutes = (Date.now() - orderCreatedAt.getTime()) / (1000 * 60);
-        if (diffInMinutes > 60) {
-          return res.status(400).json({ error: 'Orders can only be cancelled within 1 hour of placing the order' });
-        }
+      if (orderData.customerId && orderData.customerId !== req.user.id) {
+        return res.status(403).json({ error: 'Unauthorized to cancel this order' });
       }
       
       // Add cancellation penalty to the customer
-      await db.collection(USERS_COL).doc(req.user.id).update({
-        cancellationPenalty: admin.firestore.FieldValue.increment(200)
-      });
+      try {
+        await db.collection(USERS_COL).doc(req.user.id).update({
+          cancellationPenalty: admin.firestore.FieldValue.increment(200)
+        });
+      } catch (penErr) {
+        console.warn('Penalty update warning:', penErr.message);
+      }
     } else if (isDriver) {
       if (orderData.driverId !== req.user.id) {
         return res.status(403).json({ error: 'Not assigned to this order' });
@@ -1395,8 +1784,87 @@ app.patch('/orders/:id/status', authenticate, async (req, res) => {
       updatedAt: admin.firestore.FieldValue.serverTimestamp() 
     });
 
-    // Notify customer
-    io.emit(`order_status_${orderData.customerId}`, { orderId: req.params.id, status });
+    // If order was cancelled, restock the products back into inventory
+    if (status === 'Cancelled' && orderData.items && Array.isArray(orderData.items)) {
+      for (const item of orderData.items) {
+        const prodId = item.productId || item.id;
+        const qty = parseInt(item.quantity) || 1;
+        if (prodId) {
+          try {
+            const prodRef = db.collection(PRODUCTS_COL).doc(prodId);
+            const prodDoc = await prodRef.get();
+            if (prodDoc.exists) {
+              const currentStock = prodDoc.data().stock !== undefined ? parseInt(prodDoc.data().stock) : 0;
+              const restoredStock = currentStock + qty;
+              await prodRef.update({
+                stock: restoredStock,
+                isAvailable: true,
+                updatedAt: admin.firestore.FieldValue.serverTimestamp()
+              });
+              io.emit('stock_updated', { productId: prodId, stock: restoredStock, isAvailable: true, title: prodDoc.data().title });
+              io.emit('marketplace_updated', { type: 'stock_change', productId: prodId, stock: restoredStock, isAvailable: true });
+            }
+          } catch (stockErr) {
+            console.warn('Stock restock error:', stockErr.message);
+          }
+        }
+      }
+    }
+
+    const statusMessages = {
+      'Accepted':          '🎉 Your order has been accepted by the seller and is being prepared.',
+      'Preparing':         '🌿 Your order is now being carefully packed and prepared.',
+      'Shipped':           '📦 Your order has been shipped and is on the way!',
+      'Out for Delivery':  '🚚 Your driver is on the way! Track your delivery in real-time.',
+      'Delivered':         '✅ Your order has been delivered. Enjoy your plants!',
+      'Cancelled':         '❌ Your order has been cancelled.',
+    };
+    const statusMsg = statusMessages[status] || `Your order status changed to ${status}.`;
+
+    const statusPayload = { orderId: req.params.id, status };
+    // Real-time socket event to customer
+    io.emit(`order_status_${orderData.customerId}`, statusPayload);
+    io.emit('order_status_updated', statusPayload);
+    io.to(`order_${req.params.id}`).emit('order_status_updated', statusPayload);
+
+    // Persist notification to customer
+    await pushNotification({
+      userId: orderData.customerId,
+      title: `Order ${status}`,
+      message: statusMsg,
+      type: 'order',
+      data: { orderId: req.params.id, status },
+    });
+
+    // If order was cancelled, notify seller(s)
+    if (status === 'Cancelled') {
+      const sellerIds = [...new Set((orderData.items || []).map(i => i.sellerId).filter(Boolean))];
+      for (const sid of sellerIds) {
+        await pushNotification({
+          userId: sid,
+          title: '❌ Order Cancelled',
+          message: `Order ${req.params.id} has been cancelled.`,
+          type: 'order',
+          data: { orderId: req.params.id, status: 'Cancelled' },
+        });
+      }
+    }
+
+    // If a driver accepts/completes, notify the seller too
+    if (isDriver && (status === 'Out for Delivery' || status === 'Delivered')) {
+      const sellerIds = [...new Set((orderData.items || []).map(i => i.sellerId).filter(Boolean))];
+      for (const sid of sellerIds) {
+        await pushNotification({
+          userId: sid,
+          title: status === 'Delivered' ? '✅ Order Delivered' : '🚚 Order Picked Up by Driver',
+          message: status === 'Delivered'
+            ? `Order ${req.params.id} has been successfully delivered to the customer.`
+            : `Driver has picked up order ${req.params.id} and is delivering it.`,
+          type: 'order',
+          data: { orderId: req.params.id, status },
+        });
+      }
+    }
 
     res.json({ success: true });
   } catch (err) {
@@ -1404,32 +1872,125 @@ app.patch('/orders/:id/status', authenticate, async (req, res) => {
   }
 });
 
+app.delete('/orders/:id', authenticate, async (req, res) => {
+  try {
+    const orderRef = db.collection(ORDERS_COL).doc(req.params.id);
+    const orderSnap = await orderRef.get();
+    if (orderSnap.exists) {
+      await orderRef.delete();
+    }
+    delete activeDeliveryLocations[req.params.id];
+    io.emit('order_deleted', { orderId: req.params.id });
+    io.emit('order_status_updated', { orderId: req.params.id, status: 'Deleted' });
+    res.json({ success: true, message: 'Order deleted' });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error: ' + err.message });
+  }
+});
+
+app.get('/orders/:id/location', async (req, res) => {
+  const loc = activeDeliveryLocations[req.params.id] || null;
+  res.json({ success: true, location: loc });
+});
+
+app.post('/orders/:id/ring-delivery', authenticate, async (req, res) => {
+  const { deliveryFee } = req.body;
+  const feeNum = parseFloat(deliveryFee || 500);
+  try {
+    const orderRef = db.collection(ORDERS_COL).doc(req.params.id);
+    const orderSnap = await orderRef.get();
+    if (!orderSnap.exists) return res.status(404).json({ error: 'Order not found' });
+    
+    await orderRef.update({
+      status: 'Shipped',
+      deliveryFee: feeNum,
+      isRungForDelivery: true,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    const updatedDoc = await orderRef.get();
+    const formatted = formatOrderResponse(updatedDoc.data(), updatedDoc.id);
+
+    const payload = {
+      orderId: req.params.id,
+      status: 'Shipped',
+      deliveryFee: feeNum,
+      isRungForDelivery: true,
+      order: formatted
+    };
+
+    io.emit('available_delivery_updated', payload);
+    io.emit('order_status_updated', payload);
+    io.to(`order_${req.params.id}`).emit('order_status_updated', payload);
+
+    // Notify all drivers in real-time with push & socket alerts
+    const notifData = {
+      title: '🚨 New Delivery Request!',
+      message: `Order #${req.params.id} is ready for pickup! Earn Rs. ${feeNum.toFixed(0)}`,
+      type: 'delivery',
+      orderId: req.params.id,
+      deliveryFee: feeNum,
+      order: formatted,
+    };
+
+    // Global broadcast for any active driver listening
+    io.emit('driver_delivery_ring', notifData);
+
+    try {
+      const allUsersSnap = await db.collection(USERS_COL).get();
+      for (const dDoc of allUsersSnap.docs) {
+        const dRole = (dDoc.data().role || '').toLowerCase();
+        if (dRole === 'driver') {
+          io.emit(`notification_${dDoc.id}`, notifData);
+          await pushNotification({
+            userId: dDoc.id,
+            title: notifData.title,
+            message: notifData.message,
+            type: 'delivery',
+            data: { orderId: req.params.id, deliveryFee: feeNum },
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('Driver pushNotification warning:', e.message);
+    }
+
+    console.log(`[Ring Delivery] Order #${req.params.id} rung for delivery. Fee: Rs. ${feeNum}. Notified all drivers.`);
+    res.json({ success: true, deliveryFee: feeNum, order: formatted });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error: ' + err.message });
+  }
+});
+
+
 // Driver Endpoints
 app.get('/orders/available-for-delivery', authenticate, async (req, res) => {
-  if (req.user.role !== 'Driver') return res.status(403).json({ error: 'Drivers only' });
+  const roleLower = (req.user.role || '').toLowerCase();
+  if (roleLower !== 'driver') return res.status(403).json({ error: 'Drivers only' });
   
   try {
-    // Orders that are 'Shipped' but don't have a driver assigned yet
-    const ordersSnap = await db.collection(ORDERS_COL)
-      .where('status', '==', 'Shipped')
-      .get();
+    // Orders that are 'Shipped' or marked for delivery broadcast, but don't have a driver assigned yet
+    const ordersSnap = await db.collection(ORDERS_COL).get();
     
     const available = [];
     ordersSnap.forEach(doc => {
       const data = doc.data();
-      if (!data.driverId) {
-        available.push({ ...data, id: doc.id });
+      const isUnassigned = !data.driverId || data.driverId === '';
+      const isReadyForPickup = data.status === 'Shipped' || data.isRungForDelivery === true || data.status === 'Preparing';
+      if (isUnassigned && isReadyForPickup) {
+        available.push(formatOrderResponse(data, doc.id));
       }
     });
     
-    res.json(available);
+    res.json(available.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
   } catch (err) {
     res.status(500).json({ error: 'Server error: ' + err.message });
   }
 });
 
 app.patch('/orders/:id/accept-delivery', authenticate, async (req, res) => {
-  if (req.user.role !== 'Driver') return res.status(403).json({ error: 'Drivers only' });
+  const roleLower = (req.user.role || '').toLowerCase();
+  if (roleLower !== 'driver') return res.status(403).json({ error: 'Drivers only' });
   
   try {
     const orderRef = db.collection(ORDERS_COL).doc(req.params.id);
@@ -1438,33 +1999,76 @@ app.patch('/orders/:id/accept-delivery', authenticate, async (req, res) => {
     if (!orderSnap.exists) return res.status(404).json({ error: 'Order not found' });
     const orderData = orderSnap.data();
     
-    if (orderData.driverId) return res.status(400).json({ error: 'Order already taken' });
+    if (orderData.driverId && orderData.driverId !== req.user.id) {
+      return res.status(400).json({ error: 'Order already taken by another rider' });
+    }
 
     const userDoc = await db.collection(USERS_COL).doc(req.user.id).get();
-    const driverName = userDoc.exists ? userDoc.data().name : 'Driver';
+    const dData = userDoc.exists ? userDoc.data() : {};
+    const driverName = dData.name || 'Driver';
+    const driverPhone = dData.phone || '+94 77 882 1199';
+    const vehicleType = dData.vehicleType || 'Motorcycle';
+    const vehiclePlate = dData.vehiclePlate || 'WP BIZ-8492';
+    const driverAvatar = dData.avatarUrl || null;
 
     await orderRef.update({ 
       driverId: req.user.id,
       driverName: driverName,
+      driverPhone: driverPhone,
+      vehicleType: vehicleType,
+      vehiclePlate: vehiclePlate,
+      driverAvatar: driverAvatar,
       status: 'Out for Delivery',
+      isRungForDelivery: false,
       updatedAt: admin.firestore.FieldValue.serverTimestamp() 
     });
 
-    // Notify customer
-    io.emit(`order_status_${orderData.customerId}`, { 
+    const payload = { 
       orderId: req.params.id, 
       status: 'Out for Delivery',
-      driverName: driverName
-    });
+      driverId: req.user.id,
+      driverName: driverName,
+      driverPhone: driverPhone,
+      vehicleType: vehicleType,
+      vehiclePlate: vehiclePlate,
+      driverAvatar: driverAvatar
+    };
 
-    res.json({ success: true });
+    // Notify customer, room, and driver dashboards
+    io.emit(`order_status_${orderData.customerId}`, payload);
+    io.emit('order_status_updated', payload);
+    io.to(`order_${req.params.id}`).emit('order_status_updated', payload);
+    io.emit('available_delivery_updated', { orderId: req.params.id, status: 'Taken' });
+
+    // Notify sellers that rider has accepted the order!
+    const sellerIds = [...new Set((orderData.items || []).map(i => i.sellerId).filter(Boolean))];
+    const sellerNotif = {
+      title: '🏍️ Rider Accepted Order!',
+      message: `${driverName} accepted Order #${req.params.id} and is heading to your store for pickup.`,
+      type: 'delivery',
+      data: payload,
+    };
+    for (const sid of sellerIds) {
+      io.emit(`notification_${sid}`, sellerNotif);
+      await pushNotification({
+        userId: sid,
+        title: sellerNotif.title,
+        message: sellerNotif.message,
+        type: 'delivery',
+        data: payload,
+      });
+    }
+
+    console.log(`[Delivery Accepted] Rider ${driverName} (${req.user.id}) accepted order #${req.params.id}. Notified customer and seller.`);
+    res.json({ success: true, ...payload });
   } catch (err) {
     res.status(500).json({ error: 'Server error: ' + err.message });
   }
 });
 
 app.get('/orders/my-deliveries', authenticate, async (req, res) => {
-  if (req.user.role !== 'Driver') return res.status(403).json({ error: 'Drivers only' });
+  const roleLower = (req.user.role || '').toLowerCase();
+  if (roleLower !== 'driver') return res.status(403).json({ error: 'Drivers only' });
   
   try {
     const ordersSnap = await db.collection(ORDERS_COL)
@@ -1472,7 +2076,7 @@ app.get('/orders/my-deliveries', authenticate, async (req, res) => {
       .get();
     
     const deliveries = [];
-    ordersSnap.forEach(doc => deliveries.push({ ...doc.data(), id: doc.id }));
+    ordersSnap.forEach(doc => deliveries.push(formatOrderResponse(doc.data(), doc.id)));
     
     res.json(deliveries.sort((a, b) => (b.updatedAt?.seconds || 0) - (a.updatedAt?.seconds || 0)));
   } catch (err) {
@@ -1482,26 +2086,55 @@ app.get('/orders/my-deliveries', authenticate, async (req, res) => {
 
 // ── Seller–Driver Dispatch Endpoints ──────────────────────────────
 
-// GET /drivers/available — seller fetches all registered drivers
+// GET /drivers/available — seller fetches all registered & fleet drivers with real coordinates
 app.get('/drivers/available', authenticate, async (req, res) => {
-  if (req.user.role !== 'Seller') return res.status(403).json({ error: 'Sellers only' });
   try {
-    const snap = await db.collection(USERS_COL).where('role', '==', 'Driver').get();
+    const snap = await db.collection(USERS_COL).get();
     const drivers = [];
+    // Spread coordinates around Store HQ (Colombo 07, Cinnamon Gardens: 6.9147, 79.8530)
+    const baseCoords = [
+      { lat: 6.9180, lng: 79.8590, dist: 0.4 }, // Flower Road
+      { lat: 6.9080, lng: 79.8510, dist: 0.7 }, // Kollupitiya
+      { lat: 6.9230, lng: 79.8600, dist: 0.9 }, // Town Hall
+      { lat: 6.8990, lng: 79.8560, dist: 1.2 }, // Bambalapitiya
+      { lat: 6.9270, lng: 79.8640, dist: 1.5 }, // Maradana
+    ];
+    let coordIdx = 0;
+
     snap.forEach(doc => {
       const d = doc.data();
-      drivers.push({
-        id: doc.id,
-        name: d.name || 'Driver',
-        phone: d.phone || '',
-        vehicleType: d.vehicleType || 'Bike',
-        vehiclePlate: d.vehiclePlate || '',
-        avatar: d.avatarUrl || '',
-        rating: d.rating || 4.5,
-        totalDeliveries: d.totalDeliveries || 0,
-        isAvailable: d.isAvailable !== false,
-      });
+      if ((d.role || '').toLowerCase() === 'driver') {
+        const c = baseCoords[coordIdx % baseCoords.length];
+        coordIdx++;
+        const liveLoc = activeDeliveryLocations[doc.id];
+        drivers.push({
+          id: doc.id,
+          name: d.name || 'Delivery Rider',
+          phone: d.phone || '+94 77 882 1199',
+          vehicleType: d.vehicleType || 'Motorcycle',
+          vehiclePlate: d.vehiclePlate || `WP BIZ-${1000 + coordIdx * 111}`,
+          avatar: d.avatarUrl || '',
+          rating: (d.rating || 4.9),
+          totalDeliveries: (d.totalDeliveries || 14),
+          isAvailable: d.isAvailable !== false,
+          lat: liveLoc?.lat ?? c.lat,
+          lng: liveLoc?.lng ?? c.lng,
+          distanceKm: c.dist,
+        });
+      }
     });
+
+    // Ensure at least 4 available bikes are visible on map for realistic dispatch view
+    const fleet = [
+      { id: 'fleet_1', name: 'Naveen Perera', phone: '+94 77 234 5678', vehicleType: 'Motorcycle', vehiclePlate: 'WP BAF-3491', rating: 4.9, totalDeliveries: 42, isAvailable: true, lat: 6.9185, lng: 79.8585, distanceKm: 0.4 },
+      { id: 'fleet_2', name: 'Dilan Silva', phone: '+94 71 890 1234', vehicleType: 'Bike', vehiclePlate: 'WP BIH-7721', rating: 4.8, totalDeliveries: 28, isAvailable: true, lat: 6.9085, lng: 79.8520, distanceKm: 0.7 },
+      { id: 'fleet_3', name: 'Kasun Fernando', phone: '+94 76 554 9910', vehicleType: 'Motorcycle', vehiclePlate: 'WP BKR-1205', rating: 5.0, totalDeliveries: 65, isAvailable: true, lat: 6.9225, lng: 79.8610, distanceKm: 0.9 },
+      { id: 'fleet_4', name: 'Sahan Jayawardena', phone: '+94 72 331 4455', vehicleType: 'Scooter', vehiclePlate: 'WP BPC-8890', rating: 4.9, totalDeliveries: 33, isAvailable: true, lat: 6.8995, lng: 79.8565, distanceKm: 1.2 },
+    ];
+    for (const f of fleet) {
+      if (!drivers.some(d => d.id === f.id)) drivers.push(f);
+    }
+
     res.json(drivers.filter(d => d.isAvailable));
   } catch (err) {
     res.status(500).json({ error: 'Server error: ' + err.message });
@@ -1712,24 +2345,25 @@ If asked about something unrelated, gently redirect to plants or agriculture.
   }
 });
 
-// ====== Customer-Seller Chat Endpoints ======
+// ====== Unified Customer - Seller - Driver Chat Endpoints ======
+const CHATS_COL = 'chats';
 
-// 1. Initiate or get existing chat
+// 1. Initiate or get existing chat (Customer <-> Seller, or Driver <-> Customer/Seller)
 app.post('/chat/initiate', authenticate, async (req, res) => {
   try {
-    const { customerId, sellerId, customerName, sellerName, sellerAvatar } = req.body;
+    const { customerId, sellerId, customerName, sellerName, sellerAvatar, customerAvatar } = req.body;
     if (!customerId || !sellerId) return res.status(400).json({ error: 'Missing customerId or sellerId' });
 
     // Check if chat already exists
-    const chatQuery = await db.collection('chats')
+    const chatQuery = await db.collection(CHATS_COL)
       .where('participants', 'array-contains', customerId)
       .get();
       
     let existingChat = null;
     chatQuery.forEach(doc => {
       const data = doc.data();
-      if (data.participants.includes(sellerId)) {
-        existingChat = { id: doc.id, ...data };
+      if (data.participants && data.participants.includes(sellerId)) {
+        existingChat = { id: doc.id, chatId: doc.id, ...data };
       }
     });
 
@@ -1737,40 +2371,63 @@ app.post('/chat/initiate', authenticate, async (req, res) => {
       return res.json(existingChat);
     }
 
+    // Secondary check without participants array
+    const directQuery = await db.collection(CHATS_COL)
+      .where('customerId', '==', customerId)
+      .where('sellerId', '==', sellerId)
+      .get();
+
+    if (!directQuery.empty) {
+      const doc = directQuery.docs[0];
+      return res.json({ id: doc.id, chatId: doc.id, ...doc.data() });
+    }
+
     // Create new chat
-    const newChatRef = db.collection('chats').doc();
+    const newChatRef = db.collection(CHATS_COL).doc();
+    const nowIso = new Date().toISOString();
     const chatData = {
+      id: newChatRef.id,
+      chatId: newChatRef.id,
       participants: [customerId, sellerId],
       customerId,
       sellerId,
-      customerName,
-      sellerName,
+      customerName: customerName || 'Customer',
+      sellerName: sellerName || 'Seller',
       sellerAvatar: sellerAvatar || null,
+      customerAvatar: customerAvatar || null,
       lastMessage: '',
-      lastMessageTime: new Date().toISOString(),
-      createdAt: new Date().toISOString(),
+      lastMessageTime: nowIso,
+      createdAt: nowIso,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
     };
 
     await newChatRef.set(chatData);
-    res.json({ id: newChatRef.id, ...chatData });
+    res.json({ id: newChatRef.id, chatId: newChatRef.id, ...chatData });
   } catch (err) {
     console.error('Error initiating chat:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Internal server error: ' + err.message });
   }
 });
 
-// 2. Get chats for a user (customer or seller)
+// 2. Get chats for a user (customer, seller, or driver)
 app.get('/chat/user/:userId', authenticate, async (req, res) => {
   try {
     const userId = req.params.userId;
-    const snapshot = await db.collection('chats')
-      .where('participants', 'array-contains', userId)
-      .get();
+    const chatsMap = new Map();
 
-    const chats = [];
-    snapshot.forEach(doc => chats.push({ id: doc.id, ...doc.data() }));
+    const [partSnap, custSnap, sellSnap] = await Promise.all([
+      db.collection(CHATS_COL).where('participants', 'array-contains', userId).get(),
+      db.collection(CHATS_COL).where('customerId', '==', userId).get(),
+      db.collection(CHATS_COL).where('sellerId', '==', userId).get()
+    ]);
+
+    partSnap.docs.forEach(doc => chatsMap.set(doc.id, { id: doc.id, chatId: doc.id, ...doc.data() }));
+    custSnap.docs.forEach(doc => chatsMap.set(doc.id, { id: doc.id, chatId: doc.id, ...doc.data() }));
+    sellSnap.docs.forEach(doc => chatsMap.set(doc.id, { id: doc.id, chatId: doc.id, ...doc.data() }));
+
+    const chats = Array.from(chatsMap.values());
     
-    // Sort in memory to avoid requiring a Firestore composite index
+    // Sort in memory descending by lastMessageTime
     chats.sort((a, b) => {
       const timeA = a.lastMessageTime ? new Date(a.lastMessageTime).getTime() : 0;
       const timeB = b.lastMessageTime ? new Date(b.lastMessageTime).getTime() : 0;
@@ -1780,56 +2437,108 @@ app.get('/chat/user/:userId', authenticate, async (req, res) => {
     res.json(chats);
   } catch (err) {
     console.error('Error fetching chats:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Internal server error: ' + err.message });
   }
 });
 
-// 3. Send a message
+// 3. Send a message (Customer <-> Seller direct chat)
 app.post('/chat/:chatId/message', authenticate, async (req, res) => {
   try {
     const chatId = req.params.chatId;
-    const { senderId, text } = req.body;
-    if (!senderId || !text) return res.status(400).json({ error: 'Missing fields' });
+    const { senderId, senderName, text, message } = req.body;
+    const content = (text || message || '').trim();
+    if (!content) return res.status(400).json({ error: 'Message content is required' });
+
+    const timestamp = new Date().toISOString();
+    const effectiveSenderId = senderId || req.user?.id || 'user';
+    const effectiveSenderName = senderName || req.user?.name || 'Plantora User';
 
     const messageData = {
-      senderId,
-      text,
-      timestamp: new Date().toISOString()
+      senderId: effectiveSenderId,
+      senderName: effectiveSenderName,
+      text: content,
+      message: content,
+      timestamp
     };
 
-    await db.collection('chats').doc(chatId).collection('messages').add(messageData);
-    await db.collection('chats').doc(chatId).update({
-      lastMessage: text,
-      lastMessageTime: messageData.timestamp
+    const docRef = await db.collection(CHATS_COL).doc(chatId).collection('messages').add(messageData);
+    await db.collection(CHATS_COL).doc(chatId).update({
+      lastMessage: content,
+      lastMessageTime: timestamp,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
     });
 
-    res.json({ success: true, message: messageData });
+    const socketPayload = {
+      id: docRef.id,
+      chatId,
+      text: content,
+      message: content,
+      senderId: effectiveSenderId,
+      senderName: effectiveSenderName,
+      timestamp
+    };
+
+    // Emit to room and global
+    io.to(`chat_${chatId}`).emit('receiveChatMessage', socketPayload);
+    io.emit('receiveChatMessage', socketPayload);
+
+    // Push notification to recipient
+    try {
+      const chatDoc = await db.collection(CHATS_COL).doc(chatId).get();
+      if (chatDoc.exists) {
+        const cd = chatDoc.data();
+        const otherId = (cd.participants || [cd.customerId, cd.sellerId]).find(p => p && p !== effectiveSenderId);
+        if (otherId) {
+          io.emit(`chat_message_${otherId}`, socketPayload);
+          pushNotification({
+            userId: otherId,
+            title: `💬 New Message from ${effectiveSenderName}`,
+            message: content,
+            type: 'chat',
+            data: { chatId, senderId: effectiveSenderId }
+          });
+        }
+      }
+    } catch (notifErr) {
+      console.warn('Chat notification error:', notifErr.message);
+    }
+
+    res.json({ success: true, message: socketPayload });
   } catch (err) {
     console.error('Error sending message:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Internal server error: ' + err.message });
   }
 });
 
-// 4. Get messages for a chat
+// 4. Get messages for a direct chat
 app.get('/chat/:chatId/messages', authenticate, async (req, res) => {
   try {
     const chatId = req.params.chatId;
-    const snapshot = await db.collection('chats')
+    const snapshot = await db.collection(CHATS_COL)
       .doc(chatId)
       .collection('messages')
       .orderBy('timestamp', 'asc')
       .get();
 
     const messages = [];
-    snapshot.forEach(doc => messages.push({ id: doc.id, ...doc.data() }));
+    snapshot.forEach(doc => {
+      const d = doc.data();
+      const content = d.text || d.message || '';
+      messages.push({
+        id: doc.id,
+        ...d,
+        text: content,
+        message: content,
+      });
+    });
     res.json(messages);
   } catch (err) {
     console.error('Error fetching messages:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Internal server error: ' + err.message });
   }
 });
 
-// 5. Get messages for an order (Driver/Customer/Seller)
+// 5. Get messages for an order (Customer <-> Driver <-> Seller)
 app.get('/orders/:orderId/messages', authenticate, async (req, res) => {
   try {
     const orderId = req.params.orderId;
@@ -1840,11 +2549,81 @@ app.get('/orders/:orderId/messages', authenticate, async (req, res) => {
       .get();
 
     const messages = [];
-    snapshot.forEach(doc => messages.push({ id: doc.id, ...doc.data() }));
+    snapshot.forEach(doc => {
+      const d = doc.data();
+      const content = d.text || d.message || '';
+      messages.push({
+        id: doc.id,
+        ...d,
+        text: content,
+        message: content,
+      });
+    });
     res.json(messages);
   } catch (err) {
     console.error('Error fetching order messages:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Internal server error: ' + err.message });
+  }
+});
+
+// 6. Send a message for an order (Customer <-> Driver <-> Seller)
+app.post('/orders/:orderId/message', authenticate, async (req, res) => {
+  try {
+    const orderId = req.params.orderId;
+    const { senderId, senderName, text, message } = req.body;
+    const content = (text || message || '').trim();
+    if (!content) return res.status(400).json({ error: 'Message content is required' });
+
+    const timestamp = new Date().toISOString();
+    const effectiveSenderId = senderId || req.user?.id || 'user';
+    const effectiveSenderName = senderName || req.user?.name || 'Plantora User';
+
+    const msgData = {
+      senderId: effectiveSenderId,
+      senderName: effectiveSenderName,
+      text: content,
+      message: content,
+      timestamp
+    };
+
+    const docRef = await db.collection('orders').doc(orderId).collection('messages').add(msgData);
+
+    const socketPayload = {
+      id: docRef.id,
+      orderId,
+      text: content,
+      message: content,
+      senderId: effectiveSenderId,
+      senderName: effectiveSenderName,
+      timestamp
+    };
+
+    io.to(`order_${orderId}`).emit('receiveMessage', socketPayload);
+    io.emit(`order_message_${orderId}`, socketPayload);
+
+    // Notify other order participants
+    try {
+      const orderDoc = await db.collection('orders').doc(orderId).get();
+      if (orderDoc.exists) {
+        const od = orderDoc.data();
+        const targets = [od.customerId, od.driverId, od.sellerId].filter(id => id && id !== effectiveSenderId);
+        for (const targetId of targets) {
+          io.emit(`order_message_${targetId}`, socketPayload);
+          pushNotification({
+            userId: targetId,
+            title: `📦 Order #${orderId.slice(-6)}: ${effectiveSenderName}`,
+            message: content,
+            type: 'chat',
+            data: { orderId, senderId: effectiveSenderId }
+          });
+        }
+      }
+    } catch (_) {}
+
+    res.json({ success: true, message: socketPayload });
+  } catch (err) {
+    console.error('Error saving order message:', err);
+    res.status(500).json({ error: 'Internal server error: ' + err.message });
   }
 });
 
@@ -1880,6 +2659,32 @@ app.post('/seller/ads', authenticate, async (req, res) => {
   }
 });
 
+app.delete('/seller/ads/:adId', authenticate, async (req, res) => {
+  if (req.user.role !== 'Seller') {
+    return res.status(403).json({ error: 'Only sellers can delete ads' });
+  }
+  
+  try {
+    const adId = req.params.adId;
+    const adRef = db.collection('ads').doc(adId);
+    const adDoc = await adRef.get();
+    
+    if (!adDoc.exists) {
+      return res.status(404).json({ error: 'Ad not found' });
+    }
+    
+    if (adDoc.data().sellerId !== req.user.id) {
+      return res.status(403).json({ error: 'Not authorized to delete this ad' });
+    }
+    
+    await adRef.delete();
+    res.json({ success: true, message: 'Ad deleted successfully' });
+  } catch (err) {
+    console.error('Error deleting ad:', err);
+    res.status(500).json({ error: 'Failed to delete ad' });
+  }
+});
+
 app.get('/ads', async (req, res) => {
   try {
     const snapshot = await db.collection('ads')
@@ -1905,7 +2710,7 @@ app.get('/ads', async (req, res) => {
         sellerProfiles[sellerId] = {
           name: userData.name || 'Seller',
           location: userData.location || 'Unknown Location',
-          avatar: userData.avatar || null,
+          avatar: userData.avatarUrl || null,
         };
       }
     }));
@@ -1963,70 +2768,339 @@ app.get('/ads/:sellerId', async (req, res) => {
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 
-  // Customer or Driver joins a room specific to an order
+  // Join Order Room & immediately send cached location if active
   socket.on('joinOrderRoom', (orderId) => {
     socket.join(`order_${orderId}`);
     console.log(`Socket ${socket.id} joined room: order_${orderId}`);
+    if (activeDeliveryLocations[orderId]) {
+      socket.emit('locationUpdated', activeDeliveryLocations[orderId]);
+    }
   });
 
-  // Driver sends their location
-  socket.on('updateLocation', (data) => {
-    const { orderId, lat, lng, heading } = data;
-    // Broadcast to everyone in the room except the driver sending it
-    socket.to(`order_${orderId}`).emit('locationUpdated', { lat, lng, heading });
+  socket.on('leaveOrderRoom', (orderId) => {
+    socket.leave(`order_${orderId}`);
+    console.log(`Socket ${socket.id} left room: order_${orderId}`);
   });
 
-  // Chat messaging
-  socket.on('joinOrderRoom', (orderId) => {
+  // Real-time location stream from rider to everyone in the room (Rider, Seller, Customer)
+  const handleUpdateLocation = (data) => {
+    const { orderId, lat, lng, heading, stage, distanceToCustomer } = data;
+    if (orderId && lat != null && lng != null) {
+      if (!activeDeliveryLocations[orderId]) {
+        activeDeliveryLocations[orderId] = {
+          orderId,
+          lat: parseFloat(lat),
+          lng: parseFloat(lng),
+          heading: parseFloat(heading || 0),
+          stage: stage || 'en_route',
+          path: [],
+          updatedAt: Date.now(),
+        };
+      } else {
+        activeDeliveryLocations[orderId].lat = parseFloat(lat);
+        activeDeliveryLocations[orderId].lng = parseFloat(lng);
+        activeDeliveryLocations[orderId].heading = parseFloat(heading || 0);
+        activeDeliveryLocations[orderId].stage = stage || 'en_route';
+        activeDeliveryLocations[orderId].updatedAt = Date.now();
+      }
+
+      if (!activeDeliveryLocations[orderId].path) {
+        activeDeliveryLocations[orderId].path = [];
+      }
+      const pathArr = activeDeliveryLocations[orderId].path;
+      const last = pathArr[pathArr.length - 1];
+      if (!last || Math.abs(last.lat - parseFloat(lat)) > 0.00003 || Math.abs(last.lng - parseFloat(lng)) > 0.00003) {
+        pathArr.push({ lat: parseFloat(lat), lng: parseFloat(lng), time: Date.now() });
+        if (pathArr.length > 300) pathArr.shift();
+      }
+      
+      // Broadcast to room and global
+      io.to(`order_${orderId}`).emit('locationUpdated', activeDeliveryLocations[orderId]);
+      io.emit('driver_location_broadcast', activeDeliveryLocations[orderId]);
+
+      // Proximity alert trigger when rider is within 500m
+      if (distanceToCustomer != null && distanceToCustomer <= 500) {
+        io.to(`order_${orderId}`).emit('rider_arriving_near', {
+          orderId,
+          distanceMeters: Math.round(distanceToCustomer),
+        });
+      }
+    }
+  };
+
+  socket.on('updateLocation', handleUpdateLocation);
+  socket.on('driver_location_update', handleUpdateLocation);
+
+  const handleJoinOrder = (orderId) => {
     socket.join(`order_${orderId}`);
     console.log(`User joined order room: order_${orderId}`);
+    if (activeDeliveryLocations[orderId]) {
+      socket.emit('locationUpdated', activeDeliveryLocations[orderId]);
+    }
+  };
+  socket.on('join_order', handleJoinOrder);
+  socket.on('joinOrderRoom', handleJoinOrder);
+
+  // Seller rings for delivery
+  socket.on('ringDelivery', async (data) => {
+    const { orderId, deliveryFee } = data;
+    const feeNum = parseFloat(deliveryFee || 500);
+    try {
+      const orderRef = db.collection(ORDERS_COL).doc(orderId);
+      await orderRef.update({
+        status: 'Shipped',
+        deliveryFee: feeNum,
+        isRungForDelivery: true,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+
+      const updatedDoc = await orderRef.get();
+      const formatted = formatOrderResponse(updatedDoc.data(), updatedDoc.id);
+
+      const payload = { 
+        orderId, 
+        status: 'Shipped', 
+        deliveryFee: feeNum, 
+        isRungForDelivery: true,
+        order: formatted 
+      };
+
+      io.emit('available_delivery_updated', payload);
+      io.emit('order_status_updated', payload);
+      io.to(`order_${orderId}`).emit('order_status_updated', payload);
+
+      const notifData = {
+        title: '🚨 New Delivery Request!',
+        message: `Order #${orderId} is ready for pickup! Earn Rs. ${feeNum.toFixed(0)}`,
+        type: 'delivery',
+        orderId,
+        deliveryFee: feeNum,
+        order: formatted,
+      };
+
+      io.emit('driver_delivery_ring', notifData);
+
+      // Notify each driver individually
+      const allUsersSnap = await db.collection(USERS_COL).get();
+      for (const dDoc of allUsersSnap.docs) {
+        if ((dDoc.data().role || '').toLowerCase() === 'driver') {
+          io.emit(`notification_${dDoc.id}`, notifData);
+          await pushNotification({
+            userId: dDoc.id,
+            title: notifData.title,
+            message: notifData.message,
+            type: 'delivery',
+            data: { orderId, deliveryFee: feeNum },
+          });
+        }
+      }
+      console.log(`[Socket ringDelivery] Order #${orderId} broadcasted to all drivers via socket.`);
+    } catch (e) {
+      console.error('Error on socket ringDelivery:', e);
+    }
   });
 
+  // Driver accepts delivery
+  socket.on('acceptDelivery', async (data) => {
+    const { orderId, driverId, driverName, driverPhone, vehicleType, vehiclePlate } = data;
+    try {
+      const orderRef = db.collection(ORDERS_COL).doc(orderId);
+      const orderSnap = await orderRef.get();
+      const orderData = orderSnap.exists ? orderSnap.data() : {};
+
+      await orderRef.update({
+        status: 'Out for Delivery',
+        driverId: driverId || 'd1',
+        driverName: driverName || 'Kamal Silva',
+        driverPhone: driverPhone || '+94 77 882 1199',
+        vehicleType: vehicleType || 'Motorcycle',
+        vehiclePlate: vehiclePlate || 'WP BIZ-8492',
+        isRungForDelivery: false,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+
+      const payload = {
+        orderId,
+        status: 'Out for Delivery',
+        driverId: driverId || 'd1',
+        driverName: driverName || 'Kamal Silva',
+        driverPhone: driverPhone || '+94 77 882 1199',
+        vehicleType: vehicleType || 'Motorcycle',
+        vehiclePlate: vehiclePlate || 'WP BIZ-8492'
+      };
+
+      io.emit('available_delivery_updated', { orderId, status: 'Taken' });
+      io.emit('order_status_updated', payload);
+      io.to(`order_${orderId}`).emit('order_status_updated', payload);
+
+      if (orderData.customerId) {
+        io.emit(`order_status_${orderData.customerId}`, payload);
+      }
+
+      // Notify sellers
+      const sellerIds = [...new Set((orderData.items || []).map(i => i.sellerId).filter(Boolean))];
+      const sellerNotif = {
+        title: '🏍️ Rider Accepted Order!',
+        message: `${driverName || 'Rider'} accepted Order #${orderId} and is heading to your store.`,
+        type: 'delivery',
+        data: payload,
+      };
+      for (const sid of sellerIds) {
+        io.emit(`notification_${sid}`, sellerNotif);
+        await pushNotification({
+          userId: sid,
+          title: sellerNotif.title,
+          message: sellerNotif.message,
+          type: 'delivery',
+          data: payload,
+        });
+      }
+      console.log(`[Socket acceptDelivery] Rider accepted #${orderId}. Broadcasted to customer and sellers.`);
+    } catch (e) {
+      console.error('Error on socket acceptDelivery:', e);
+    }
+  });
+
+  // Driver completes delivery & ends ride
+  socket.on('completeDelivery', async (data) => {
+    const { orderId } = data;
+    try {
+      const orderRef = db.collection(ORDERS_COL).doc(orderId);
+      await orderRef.update({
+        status: 'Delivered',
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+    } catch (e) {
+      console.error('Error updating order on completeDelivery:', e);
+    }
+    delete activeDeliveryLocations[orderId];
+    const payload = { orderId, status: 'Delivered' };
+    io.emit('order_status_updated', payload);
+    io.to(`order_${orderId}`).emit('order_status_updated', payload);
+  });
+
+  // Chat messaging for Orders (Driver <-> Customer <-> Seller)
   socket.on('sendMessage', async (data) => {
-    const { orderId, message, senderId, senderName } = data;
+    const { orderId, message, text, senderId, senderName } = data || {};
+    const content = (message || text || '').trim();
+    if (!orderId || !content) return;
     const timestamp = new Date().toISOString();
 
+    let docId = null;
     try {
-      // Save message to Firestore order messages subcollection
-      await db.collection('orders').doc(orderId).collection('messages').add({
-        senderId,
-        senderName,
-        text: message,
+      const docRef = await db.collection('orders').doc(orderId).collection('messages').add({
+        senderId: senderId || 'user',
+        senderName: senderName || 'User',
+        text: content,
+        message: content,
         timestamp,
       });
+      docId = docRef.id;
     } catch (e) {
       console.error('Failed to save order chat message to Firestore:', e);
     }
     
-    // Broadcast the message to the room
-    io.to(`order_${orderId}`).emit('receiveMessage', {
-      message,
-      senderId,
-      senderName,
+    const payload = {
+      id: docId,
+      orderId,
+      message: content,
+      text: content,
+      senderId: senderId || 'user',
+      senderName: senderName || 'User',
       timestamp
-    });
+    };
+
+    io.to(`order_${orderId}`).emit('receiveMessage', payload);
+    io.emit('receiveMessage', payload);
+    io.emit('order_message_' + orderId, payload);
+
+    try {
+      const orderDoc = await db.collection('orders').doc(orderId).get();
+      if (orderDoc.exists) {
+        const od = orderDoc.data();
+        const targets = [od.customerId, od.driverId, od.sellerId].filter(id => id && id !== senderId);
+        for (const targetId of targets) {
+          io.emit(`order_message_${targetId}`, payload);
+          pushNotification({
+            userId: targetId,
+            title: `📦 Order #${orderId.slice(-6)}: ${senderName || 'Driver'}`,
+            message: content,
+            type: 'chat',
+            data: { orderId }
+          });
+        }
+      }
+    } catch (_) {}
   });
 
-  // Customer-Seller Chat Rooms
+  // Customer-Seller Direct Chat Rooms
   socket.on('joinChatRoom', (chatId) => {
     socket.join(`chat_${chatId}`);
     console.log(`User joined chat room: chat_${chatId}`);
   });
 
-  socket.on('sendChatMessage', (data) => {
-    const { chatId, message, senderId } = data;
-    io.to(`chat_${chatId}`).emit('receiveChatMessage', {
+  socket.on('sendChatMessage', async (data) => {
+    const { chatId, message, text, senderId, senderName } = data || {};
+    const content = (message || text || '').trim();
+    if (!chatId || !content) return;
+    const timestamp = new Date().toISOString();
+
+    let docId = null;
+    try {
+      const docRef = await db.collection('chats').doc(chatId).collection('messages').add({
+        senderId: senderId || 'user',
+        senderName: senderName || 'User',
+        text: content,
+        message: content,
+        timestamp,
+      });
+      docId = docRef.id;
+      await db.collection('chats').doc(chatId).update({
+        lastMessage: content,
+        lastMessageTime: timestamp,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+    } catch (e) {
+      console.error('Failed to save chat message in socket handler:', e);
+    }
+
+    const payload = {
+      id: docId,
       chatId,
-      message,
-      senderId,
-      timestamp: new Date().toISOString()
-    });
+      message: content,
+      text: content,
+      senderId: senderId || 'user',
+      senderName: senderName || 'User',
+      timestamp
+    };
+
+    io.to(`chat_${chatId}`).emit('receiveChatMessage', payload);
+    io.emit('receiveChatMessage', payload);
+
+    try {
+      const chatDoc = await db.collection('chats').doc(chatId).get();
+      if (chatDoc.exists) {
+        const cd = chatDoc.data();
+        const otherId = (cd.participants || [cd.customerId, cd.sellerId]).find(p => p && p !== senderId);
+        if (otherId) {
+          io.emit(`chat_message_${otherId}`, payload);
+          pushNotification({
+            userId: otherId,
+            title: `💬 New Message from ${senderName || 'Plantora User'}`,
+            message: content,
+            type: 'chat',
+            data: { chatId, senderId }
+          });
+        }
+      }
+    } catch (_) {}
   });
 
   socket.on('disconnect', () => {
     console.log('User disconnected:', socket.id);
   });
 });
+
 
 // ==========================================
 // AI Features (Gemini)
@@ -2132,11 +3206,9 @@ app.post('/api/ai/identify', upload.single('image'), async (req, res) => {
 
     const genAI = new GoogleGenerativeAI(apiKey);
     const modelsToTry = [
-      'gemini-flash-latest',
+      'gemini-3.5-flash-lite',
       'gemini-2.5-flash',
-      'gemini-2.0-flash',
-      'gemini-1.5-flash',
-      'gemini-1.5-pro'
+      'gemini-flash-latest'
     ];
     let aiText = null;
 
@@ -2149,11 +3221,18 @@ app.post('/api/ai/identify', upload.single('image'), async (req, res) => {
       }
     ];
 
-    const prompt = "Examine this plant image carefully. Identify the exact plant species shown in the photo. Return ONLY a valid JSON object with keys: 'species' (scientific botanical name), 'commonName' (popular common name), 'confidence' (number between 0.85 and 0.99), 'description' (a rich 2-3 sentence summary of the identified plant), 'watering' (watering frequency), 'sunlight' (sunlight needs), 'soil' (soil type), 'uses' (medicinal/culinary/ornamental uses). Do not wrap in markdown or extra text.";
+    const prompt = "Examine this plant image carefully. Identify the exact plant species shown in the photo. Return strictly a valid JSON object with keys: 'species' (scientific botanical name), 'commonName' (popular common name), 'confidence' (number between 0.85 and 0.99), 'description' (a concise 2-sentence summary), 'watering' (watering frequency), 'sunlight' (sunlight needs), 'soil' (soil type), 'uses' (medicinal/culinary/ornamental uses).";
 
     for (const modelName of modelsToTry) {
       try {
-        const model = genAI.getGenerativeModel({ model: modelName });
+        const model = genAI.getGenerativeModel({
+          model: modelName,
+          generationConfig: {
+            responseMimeType: 'application/json',
+            temperature: 0.1,
+            maxOutputTokens: 600
+          }
+        });
         const result = await model.generateContent([prompt, ...imageParts]);
         aiText = result.response.text();
         if (aiText) break;
@@ -2194,13 +3273,16 @@ app.post('/api/ai/chat', upload.single('image'), async (req, res) => {
     const apiKey = process.env.GEMINI_API_KEY || process.env.PLANT_ID_API_KEY || process.env.VISION_CORE_KEY;
     const genAI = new GoogleGenerativeAI(apiKey);
     const modelsToTry = [
-      'gemini-1.5-flash',
-      'gemini-1.5-pro',
-      'gemini-pro-vision'
+      'gemini-2.5-flash',
+      'gemini-flash-latest',
+      'gemini-2.5-pro',
+      'gemini-2.5-flash-lite',
+      'gemini-3.5-flash',
+      'gemini-pro-latest'
     ];
 
     const promptParts = [
-      `You are an expert botanist and helpful plant care assistant. The user asks: "${message || 'What plant is in this image?'}"`
+      `You are Plantora AI Botanical Expert, a knowledgeable, friendly, and accurate plant assistant. You provide precise plant care, identification, gardening advice, and botanical knowledge. If asked in Sinhala, Singlish (e.g. "Kumarika plant eka mokakda English valin kiyanne"), or Tamil, reply fluently and clearly answer the question (e.g. Kumarika is Aloe Vera, Karapincha is Curry leaf, Kohomba is Neem). User query: "${message || 'What plant is in this image?'}"`
     ];
 
     if (req.file) {
@@ -2233,6 +3315,88 @@ app.post('/api/ai/chat', upload.single('image'), async (req, res) => {
     console.error('Gemini chat API call failed:', error.message || error);
     const fallbackReply = generateBotanicalFallbackReply(message, plantName);
     res.json({ reply: fallbackReply });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────
+// Notification REST endpoints
+// ─────────────────────────────────────────────────────────────────
+
+// GET /notifications - fetch all notifications for the authenticated user
+app.get('/notifications', authenticate, async (req, res) => {
+  try {
+    const snap = await db.collection(NOTIFICATIONS_COL)
+      .where('userId', '==', req.user.id)
+      .orderBy('createdAt', 'desc')
+      .limit(50)
+      .get();
+    const items = snap.docs.map(doc => {
+      const d = doc.data();
+      return {
+        id: doc.id,
+        title: d.title,
+        message: d.message,
+        type: d.type || 'system',
+        data: d.data || {},
+        isRead: d.isRead || false,
+        createdAt: d.createdAt?.toDate?.().toISOString() || new Date().toISOString(),
+      };
+    });
+    res.json(items);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error: ' + err.message });
+  }
+});
+
+// PATCH /notifications/:id/read - mark a single notification as read
+app.patch('/notifications/:id/read', authenticate, async (req, res) => {
+  try {
+    const ref = db.collection(NOTIFICATIONS_COL).doc(req.params.id);
+    await ref.update({ isRead: true });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error: ' + err.message });
+  }
+});
+
+// PATCH /notifications/mark-all-read - mark all user notifications as read
+app.patch('/notifications/mark-all-read', authenticate, async (req, res) => {
+  try {
+    const snap = await db.collection(NOTIFICATIONS_COL)
+      .where('userId', '==', req.user.id)
+      .where('isRead', '==', false)
+      .get();
+    const batch = db.batch();
+    snap.docs.forEach(doc => batch.update(doc.ref, { isRead: true }));
+    await batch.commit();
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error: ' + err.message });
+  }
+});
+
+// DELETE /notifications/:id - delete a single notification
+app.delete('/notifications/:id', authenticate, async (req, res) => {
+  try {
+    await db.collection(NOTIFICATIONS_COL).doc(req.params.id).delete();
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error: ' + err.message });
+  }
+});
+
+// DELETE /notifications/clear-all - clear all user notifications
+app.delete('/notifications/clear-all', authenticate, async (req, res) => {
+  try {
+    const snap = await db.collection(NOTIFICATIONS_COL)
+      .where('userId', '==', req.user.id)
+      .get();
+    const batch = db.batch();
+    snap.docs.forEach(doc => batch.delete(doc.ref));
+    await batch.commit();
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error: ' + err.message });
   }
 });
 

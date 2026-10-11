@@ -62,7 +62,7 @@ class ProductModel {
       isAvailable: map['isAvailable'] ?? true,
       tags: List<String>.from(map['tags'] ?? []),
       createdAt: map['createdAt'] != null 
-          ? (map['createdAt'] is String ? DateTime.parse(map['createdAt']) : DateTime.now())
+          ? (map['createdAt'] is String ? (DateTime.tryParse(map['createdAt'])?.toLocal() ?? DateTime.now()) : DateTime.now())
           : DateTime.now(),
       originalPrice: map['originalPrice'] != null ? (map['originalPrice'] as num).toDouble() : null,
       orderCount: map['orderCount'] ?? 0,
@@ -98,5 +98,52 @@ class ProductModel {
       'tags': tags,
       'createdAt': createdAt.toIso8601String(),
     };
+  }
+
+  factory ProductModel.fromJson(Map<String, dynamic> json) => ProductModel.fromMap(json);
+  Map<String, dynamic> toJson() => toMap();
+
+  ProductModel copyWith({
+    String? id,
+    String? title,
+    String? description,
+    double? price,
+    String? category,
+    String? imageUrl,
+    String? emoji,
+    String? sellerId,
+    String? sellerName,
+    String? sellerLocation,
+    String? sellerAvatar,
+    double? rating,
+    int? reviewCount,
+    int? stock,
+    bool? isAvailable,
+    List<String>? tags,
+    DateTime? createdAt,
+    double? originalPrice,
+    int? orderCount,
+  }) {
+    return ProductModel(
+      id: id ?? this.id,
+      title: title ?? this.title,
+      description: description ?? this.description,
+      price: price ?? this.price,
+      category: category ?? this.category,
+      imageUrl: imageUrl ?? this.imageUrl,
+      emoji: emoji ?? this.emoji,
+      sellerId: sellerId ?? this.sellerId,
+      sellerName: sellerName ?? this.sellerName,
+      sellerLocation: sellerLocation ?? this.sellerLocation,
+      sellerAvatar: sellerAvatar ?? this.sellerAvatar,
+      rating: rating ?? this.rating,
+      reviewCount: reviewCount ?? this.reviewCount,
+      stock: stock ?? this.stock,
+      isAvailable: isAvailable ?? this.isAvailable,
+      tags: tags ?? this.tags,
+      createdAt: createdAt ?? this.createdAt,
+      originalPrice: originalPrice ?? this.originalPrice,
+      orderCount: orderCount ?? this.orderCount,
+    );
   }
 }

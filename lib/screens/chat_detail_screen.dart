@@ -92,12 +92,22 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> with SingleTickerPr
   void _setupSocket() {
     _socketService.joinChatRoom(_chatId);
     _chatSub = _socketService.chatStream.listen((data) {
-      if (data['chatId'] == _chatId) {
+      final incomingChatId = (data['chatId'] ?? data['id'])?.toString();
+      if (incomingChatId == _chatId || _chatId == 'chat_generic') {
         if (data['senderId'] != _currentUser?.id) {
-          setState(() {
-            _messages.add(data);
-          });
-          _scrollToBottom();
+          final content = (data['text'] ?? data['message'] ?? '').toString();
+          if (content.isNotEmpty) {
+            final exists = _messages.any((m) =>
+                m is Map &&
+                m['timestamp'] == data['timestamp'] &&
+                (m['text'] ?? m['message']) == content);
+            if (!exists && mounted) {
+              setState(() {
+                _messages.add(data);
+              });
+              _scrollToBottom();
+            }
+          }
         }
       }
     });
@@ -117,11 +127,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> with SingleTickerPr
       final msgs = await _chatService.getChatMessages(_chatId);
       if (mounted) {
         setState(() {
-          if (msgs.isNotEmpty) {
-            _messages = msgs;
-          } else {
-            _messages = _getStarterMessages();
-          }
+          _messages = msgs;
           _isLoading = false;
         });
         _scrollToBottom();
@@ -129,55 +135,12 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> with SingleTickerPr
     } catch (_) {
       if (mounted) {
         setState(() {
-          _messages = _getStarterMessages();
+          _messages = [];
           _isLoading = false;
         });
         _scrollToBottom();
       }
     }
-  }
-
-  List<Map<String, dynamic>> _getStarterMessages() {
-    final now = DateTime.now();
-
-    if (_role == 'Rider') {
-      return [
-        {
-          'senderId': 'other_id',
-          'text': '🏍️ Hello! I am your EcoCourier rider assigned to your plant delivery.',
-          'timestamp': now.subtract(const Duration(minutes: 8)).toIso8601String(),
-        },
-        {
-          'senderId': 'other_id',
-          'text': 'Your plant is safely packed in our ventilated container. I will ring you as soon as I arrive at your location! 📦',
-          'timestamp': now.subtract(const Duration(minutes: 7)).toIso8601String(),
-        },
-      ];
-    }
-
-    if (_role == 'Customer') {
-      return [
-        {
-          'senderId': 'other_id',
-          'text': 'Hello! Is this plant still available for delivery? Can you provide details on the potting soil? 🪴',
-          'timestamp': now.subtract(const Duration(minutes: 10)).toIso8601String(),
-        },
-      ];
-    }
-
-    // Default Seller starter
-    return [
-      {
-        'senderId': 'other_id',
-        'text': '🌿 Ayubowan! Welcome to $_participantName.',
-        'timestamp': now.subtract(const Duration(minutes: 12)).toIso8601String(),
-      },
-      {
-        'senderId': 'other_id',
-        'text': 'All our nursery plants are 100% pest-free, organic-fed, and ready to ship with secure potting. How can we assist you today?',
-        'timestamp': now.subtract(const Duration(minutes: 11)).toIso8601String(),
-      },
-    ];
   }
 
   void _scrollToBottom() {
@@ -200,8 +163,11 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> with SingleTickerPr
     HapticFeedback.lightImpact();
 
     final userMsg = {
+      'chatId': _chatId,
       'senderId': _currentUser!.id,
+      'senderName': _currentUser!.name,
       'text': text,
+      'message': text,
       'timestamp': DateTime.now().toIso8601String(),
       'status': 'sent',
     };
@@ -211,87 +177,9 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> with SingleTickerPr
     });
     _scrollToBottom();
 
-    // Broadcast to real backend services
-    _socketService.sendChatMessage(_chatId, text, _currentUser!.id);
-    _chatService.sendMessage(_chatId, _currentUser!.id, text);
-
-    // Simulate instant real-time response for high reliability
-    _simulateRealTimeResponse(text);
-  }
-
-  void _simulateRealTimeResponse(String incomingQuery) {
-    // 1. Show typing after 600ms
-    Timer(const Duration(milliseconds: 700), () {
-      if (mounted) {
-        setState(() => _isOtherTyping = true);
-        _scrollToBottom();
-      }
-    });
-
-    // 2. Deliver message after 2000ms
-    Timer(const Duration(milliseconds: 2100), () {
-      if (!mounted) return;
-
-      final replyText = _generateSmartReply(incomingQuery);
-      HapticFeedback.selectionClick();
-
-      setState(() {
-        _isOtherTyping = false;
-        _messages.add({
-          'senderId': 'other_id',
-          'text': replyText,
-          'timestamp': DateTime.now().toIso8601String(),
-          'status': 'delivered',
-        });
-      });
-      _scrollToBottom();
-    });
-  }
-
-  String _generateSmartReply(String query) {
-    final lower = query.toLowerCase();
-
-    if (_role == 'Rider') {
-      if (lower.contains('where') || lower.contains('location') || lower.contains('map')) {
-        return '📍 I am about 1.5 km away near the main junction. ETA is around 8-10 minutes!';
-      }
-      if (lower.contains('time') || lower.contains('when') || lower.contains('arrive')) {
-        return '⏰ On track for delivery within 10-15 minutes. Weather is clear and route is smooth!';
-      }
-      if (lower.contains('gate') || lower.contains('door') || lower.contains('leave')) {
-        return '👍 Understood! I will leave the plant carefully in the shaded porch and take a delivery confirmation photo.';
-      }
-      if (lower.contains('call')) {
-        return '📞 Will give you a quick phone call as soon as I pull up outside!';
-      }
-      return 'Got your message! I am currently riding carefully with your plant secured in upright racks. See you shortly! 🏍️';
-    }
-
-    if (_role == 'Customer') {
-      if (lower.contains('pack') || lower.contains('ship') || lower.contains('send')) {
-        return 'Thank you so much! Please include the plant care leaflet if possible. Looking forward to receiving it!';
-      }
-      return 'Sounds wonderful! Thank you for the quick assistance and confirmation. 🌿';
-    }
-
-    // Role: Seller
-    if (lower.contains('available') || lower.contains('stock') || lower.contains('have')) {
-      return 'Yes! We have healthy, fully rooted pots in stock right now in our greenhouse. Ready for immediate packing! 🪴';
-    }
-    if (lower.contains('delivery') || lower.contains('colombo') || lower.contains('shipping') || lower.contains('rider')) {
-      return '🚚 We offer same-day and next-day delivery across Western Province via EcoCourier riders with live GPS tracking!';
-    }
-    if (lower.contains('water') || lower.contains('care') || lower.contains('sun') || lower.contains('light')) {
-      return '🌿 Care tip: Water every 2-3 days when the top 2 inches of soil feel dry. Place in bright indirect sunlight for vibrant growth!';
-    }
-    if (lower.contains('photo') || lower.contains('picture') || lower.contains('real')) {
-      return '📸 The photos shown are 100% authentic actual stock from our nursery. We ensure every plant sent is vigorous and pest-free!';
-    }
-    if (lower.contains('price') || lower.contains('cost') || lower.contains('discount')) {
-      return 'Our prices include premium nursery potting mix and plant food. We can also provide a 5% loyalty bonus on your next order!';
-    }
-
-    return 'Thank you for reaching out! We are preparing our daily dispatches. Let us know if you would like to proceed with your order or have questions! 🌿✨';
+    // Broadcast to real backend services (socket + REST fallback)
+    _socketService.sendChatMessage(_chatId, text, _currentUser!.id, senderName: _currentUser!.name);
+    _chatService.sendMessage(_chatId, _currentUser!.id, text, senderName: _currentUser!.name);
   }
 
   Future<void> _pickImage(ImageSource source) async {
@@ -309,7 +197,6 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> with SingleTickerPr
         _messages.add(msg);
       });
       _scrollToBottom();
-      _simulateRealTimeResponse('Here is a photo of the plant');
     }
   }
 
@@ -587,12 +474,53 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> with SingleTickerPr
               Expanded(
                 child: _isLoading
                     ? const Center(child: CircularProgressIndicator(color: Color(0xFF10B981)))
-                    : ListView.builder(
-                        controller: _scrollController,
-                        physics: const BouncingScrollPhysics(),
-                        padding: const EdgeInsets.fromLTRB(14, 16, 14, 10),
-                        itemCount: _messages.length + (_isOtherTyping ? 1 : 0),
-                        itemBuilder: (context, index) {
+                    : _messages.isEmpty
+                        ? Center(
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 32),
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.all(20),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF10B981).withOpacity(0.12),
+                                      shape: BoxShape.circle,
+                                    ),
+                                    child: const Icon(
+                                      Icons.chat_bubble_outline_rounded,
+                                      size: 40,
+                                      color: Color(0xFF10B981),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 16),
+                                  Text(
+                                    'No messages yet',
+                                    style: GoogleFonts.outfit(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w700,
+                                      color: isDark ? Colors.white : const Color(0xFF0F172A),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Text(
+                                    'Send a message to $_participantName to start the conversation.',
+                                    textAlign: TextAlign.center,
+                                    style: GoogleFonts.inter(
+                                      fontSize: 13,
+                                      color: isDark ? Colors.white60 : Colors.black54,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          )
+                        : ListView.builder(
+                            controller: _scrollController,
+                            physics: const BouncingScrollPhysics(),
+                            padding: const EdgeInsets.fromLTRB(14, 16, 14, 10),
+                            itemCount: _messages.length + (_isOtherTyping ? 1 : 0),
+                            itemBuilder: (context, index) {
                           // Typing Indicator Bubble at bottom
                           if (index == _messages.length) {
                             return _buildTypingBubble(isDark);
@@ -607,9 +535,12 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> with SingleTickerPr
                           try {
                             final ts = msg['timestamp'] ?? msg['createdAt'] ?? msg['time'];
                             if (ts != null) {
-                              final dt = DateTime.tryParse(ts.toString());
+                              final dt = DateTime.tryParse(ts.toString())?.toLocal();
                               if (dt != null) {
-                                timeStr = '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+                                final hour12 = dt.hour == 0 ? 12 : (dt.hour > 12 ? dt.hour - 12 : dt.hour);
+                                final ampm = dt.hour >= 12 ? 'PM' : 'AM';
+                                final min = dt.minute.toString().padLeft(2, '0');
+                                timeStr = '$hour12:$min $ampm';
                               }
                             }
                           } catch (_) {}

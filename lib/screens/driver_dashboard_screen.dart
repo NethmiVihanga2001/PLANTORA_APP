@@ -14,6 +14,9 @@ import 'driver_chat_screen.dart';
 import 'driver_active_delivery_screen.dart';
 import 'driver_main_screen.dart'; // for driverScaffoldKey
 
+import 'dart:async';
+import '../services/socket_service.dart';
+
 class DriverDashboardScreen extends StatefulWidget {
   const DriverDashboardScreen({super.key});
 
@@ -25,6 +28,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> with Tick
   late AnimationController _radarController;
   final OrderService _orderService = OrderService();
   final AuthService _authService = AuthService();
+  StreamSubscription? _deliverySub;
   
   List<OrderModel> _availableOrders = [];
   bool _isLoading = true;
@@ -42,14 +46,52 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> with Tick
       vsync: this,
       duration: const Duration(seconds: 3),
     )..repeat();
+
+    _deliverySub = SocketService().availableDeliveriesStream.listen((data) {
+      if (mounted) {
+        _loadData();
+        if (data['status'] != 'Taken') {
+          try {
+            HapticFeedback.heavyImpact();
+            SystemSound.play(SystemSoundType.alert);
+          } catch (_) {}
+          final ordId = data['orderId'] ?? '';
+          final fee = data['deliveryFee'] ?? '500';
+          ScaffoldMessenger.of(context).clearSnackBars();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Row(
+                children: [
+                  const Icon(Icons.two_wheeler_rounded, color: Colors.white),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      '🚨 New Delivery Offer! Order #$ordId — Earn Rs. $fee',
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                    ),
+                  ),
+                ],
+              ),
+              backgroundColor: const Color(0xFF10B981),
+              duration: const Duration(seconds: 4),
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+          );
+        }
+      }
+    });
+
     _loadData();
   }
 
   @override
   void dispose() {
     _radarController.dispose();
+    _deliverySub?.cancel();
     super.dispose();
   }
+
 
   Future<void> _loadData() async {
     setState(() => _isLoading = true);
@@ -57,45 +99,6 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> with Tick
     
     // Fetch available deliveries from backend
     _availableOrders = await _orderService.getAvailableDeliveries();
-    
-    // Create dummy orders if empty for demonstration of the premium UI
-    if (_availableOrders.isEmpty) {
-      _availableOrders = [
-        OrderModel(
-          id: 'DEL-839210',
-          customerId: 'b1',
-          customerName: 'Vihanga Nethmi',
-          phone: '+94 77 123 4567',
-          items: [],
-          totalAmount: 250.0,
-          status: 'Available',
-          shippingAddress: '123 Main St, Colombo',
-          createdAt: DateTime.now(),
-        ),
-        OrderModel(
-          id: 'DEL-839211',
-          customerId: 'b2',
-          customerName: 'Jane Smith',
-          phone: '+94 77 234 5678',
-          items: [],
-          totalAmount: 350.0,
-          status: 'Available',
-          shippingAddress: '45 Park Ave, Colombo',
-          createdAt: DateTime.now().subtract(const Duration(minutes: 5)),
-        ),
-        OrderModel(
-          id: 'DEL-839212',
-          customerId: 'b3',
-          customerName: 'Michael Brown',
-          phone: '+94 77 345 6789',
-          items: [],
-          totalAmount: 150.0,
-          status: 'Available',
-          shippingAddress: '78 Lake Drive, Colombo',
-          createdAt: DateTime.now().subtract(const Duration(minutes: 12)),
-        ),
-      ];
-    }
     
     if (mounted) setState(() => _isLoading = false);
   }
@@ -591,7 +594,16 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> with Tick
                   ],
                 ),
                 child: _InteractiveSwipeButton(
+                  order: order,
                   onAccept: () async {
+                    SocketService().acceptDelivery(order.id, {
+                      'driverId': _currentUser?.id ?? 'd1',
+                      'driverName': _currentUser?.name ?? 'Rider',
+                      'driverPhone': _currentUser?.phone ?? '',
+                      'vehicleType': _currentUser?.vehicleType ?? 'Motorcycle',
+                      'vehiclePlate': 'WP BIZ-8492',
+                    });
+
                     await _orderService.acceptDelivery(order.id);
                   },
                 ),
@@ -646,8 +658,9 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> with Tick
 }
 
 class _InteractiveSwipeButton extends StatefulWidget {
+  final OrderModel? order;
   final Future<void> Function()? onAccept;
-  const _InteractiveSwipeButton({this.onAccept});
+  const _InteractiveSwipeButton({this.order, this.onAccept});
 
   @override
   State<_InteractiveSwipeButton> createState() => _InteractiveSwipeButtonState();
@@ -689,11 +702,11 @@ class _InteractiveSwipeButtonState extends State<_InteractiveSwipeButton> {
                         widget.onAccept!();
                       }
                       
-                      // Navigate to Active Delivery Screen
+                      // Navigate to Active Delivery Screen with order
                       Future.delayed(const Duration(milliseconds: 250), () {
                         Navigator.push(
                           context,
-                          MaterialPageRoute(builder: (_) => const DriverActiveDeliveryScreen()),
+                          MaterialPageRoute(builder: (_) => DriverActiveDeliveryScreen(order: widget.order)),
                         ).then((_) {
                           if (mounted) {
                             setState(() {
@@ -720,12 +733,12 @@ class _InteractiveSwipeButtonState extends State<_InteractiveSwipeButton> {
                     shape: BoxShape.circle,
                     boxShadow: [
                       BoxShadow(color: Colors.black.withValues(alpha: 0.15), blurRadius: 8, offset: const Offset(0, 2))
-                    ]
+                    ],
                   ),
                   child: Icon(
                     _isCompleted ? Icons.check_rounded : Icons.keyboard_double_arrow_right_rounded, 
                     color: const Color(0xFF022C22), 
-                    size: 24
+                    size: 24,
                   ),
                 ),
               ),
@@ -736,6 +749,7 @@ class _InteractiveSwipeButtonState extends State<_InteractiveSwipeButton> {
     );
   }
 }
+
 
 class GridPainter extends CustomPainter {
   final Color color;

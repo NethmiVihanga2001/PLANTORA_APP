@@ -76,16 +76,22 @@ class AuthProvider extends ChangeNotifier {
   Future<String> login({
     required String email,
     required String password,
+    String? role,
     bool rememberMe = false,
   }) async {
     _isLoading = true;
     _error = null;
     notifyListeners();
 
-    final result = await _authService.login(email: email, password: password, rememberMe: rememberMe);
+    final result = await _authService.login(
+      email: email, 
+      password: password, 
+      role: role,
+      rememberMe: rememberMe,
+    );
 
     _isLoading = false;
-    if (result['success']) {
+    if (result['success'] == true) {
       if (result['requires2fa'] == true) {
         _temp2faUser = result['tempUser'] as UserModel;
         notifyListeners();
@@ -95,7 +101,7 @@ class AuthProvider extends ChangeNotifier {
       notifyListeners();
       return 'success';
     } else {
-      _error = result['message'] as String;
+      _error = (result['error'] ?? result['message'] ?? 'Login failed').toString();
       notifyListeners();
       return 'error';
     }
@@ -121,7 +127,7 @@ class AuthProvider extends ChangeNotifier {
     );
 
     _isLoading = false;
-    if (result['success']) {
+    if (result['success'] == true) {
       if (result['requires2fa'] == true) {
         _temp2faUser = result['tempUser'] as UserModel;
         notifyListeners();
@@ -131,7 +137,7 @@ class AuthProvider extends ChangeNotifier {
       notifyListeners();
       return 'success';
     } else {
-      _error = result['message'] as String;
+      _error = (result['error'] ?? result['message'] ?? 'Login failed').toString();
       notifyListeners();
       return 'error';
     }
@@ -227,6 +233,7 @@ class AuthProvider extends ChangeNotifier {
     final avatarUrl = await _authService.uploadProfileImage(bytes, filename);
     if (avatarUrl != null && _user != null) {
       _user!.avatarUrl = avatarUrl;
+      await _authService.updateProfile(_user!);
       notifyListeners();
       return true;
     }
@@ -236,7 +243,17 @@ class AuthProvider extends ChangeNotifier {
   Future<bool> updateShopImage(List<int> bytes, String filename) async {
     final shopImage = await _authService.uploadShopImage(bytes, filename);
     if (shopImage != null && _user != null) {
+      // Backend /auth/upload-shop-image already saved to Firestore directly.
+      // Just update the in-memory user and local SharedPreferences cache.
       _user!.shopImage = shopImage;
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final userJson = jsonEncode(_user!.toMap());
+        await prefs.setString('current_user', userJson);
+        if (_user!.email.isNotEmpty) {
+          await prefs.setString('user_account_${_user!.email.trim().toLowerCase()}', userJson);
+        }
+      } catch (_) {}
       notifyListeners();
       return true;
     }

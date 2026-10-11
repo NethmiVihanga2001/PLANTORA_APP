@@ -562,9 +562,9 @@ class _HelpCenterScreenState extends State<HelpCenterScreen> {
                 icon: Icons.mail_outline_rounded,
                 color: const Color(0xFF8B5CF6),
                 title: 'Email Help Desk',
-                subtitle: 'support@plantora.com',
+                subtitle: 'supportplantora@gmail.com',
                 onTap: () {
-                  Clipboard.setData(const ClipboardData(text: 'support@plantora.com'));
+                  Clipboard.setData(const ClipboardData(text: 'supportplantora@gmail.com'));
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: const Text('Support email copied to clipboard!'),

@@ -12,6 +12,7 @@ import '../settings/payment_methods_screen.dart';
 import '../settings/info_screen.dart';
 import '../welcome_screen.dart';
 import 'package:flutter/services.dart';
+import '../../providers/localization_provider.dart';
 
 class SellerSettingsView extends StatefulWidget {
   final VoidCallback onMenuTap;
@@ -27,6 +28,7 @@ class _SellerSettingsViewState extends State<SellerSettingsView> {
     final isDark = context.watch<ThemeProvider>().isDarkMode;
     final user = context.watch<AuthProvider>().user;
     final notificationsEnabled = context.watch<NotificationProvider>().notificationsEnabled;
+    final loc = context.watch<LocalizationProvider>();
 
     return Scaffold(
       backgroundColor: context.scaffoldBg,
@@ -89,13 +91,13 @@ class _SellerSettingsViewState extends State<SellerSettingsView> {
                 ]),
 
                 // Preferences Section
-                _buildSectionHeader(context, 'App Preferences'),
+                _buildSectionHeader(context, loc.translate('app_preferences')),
                 _buildSectionCard(context, [
                   _buildSwitchTile(
                     context: context,
                     icon: Icons.notifications_active_rounded,
                     iconColor: const Color(0xFFEC4899),
-                    title: 'Push Notifications',
+                    title: loc.translate('push_notifications'),
                     value: notificationsEnabled,
                     onChanged: (val) => context.read<NotificationProvider>().toggleNotifications(val),
                     showDivider: true,
@@ -104,7 +106,7 @@ class _SellerSettingsViewState extends State<SellerSettingsView> {
                     context: context,
                     icon: Icons.dark_mode_rounded,
                     iconColor: const Color(0xFF3B82F6),
-                    title: 'Dark Mode',
+                    title: loc.translate('dark_mode'),
                     value: isDark,
                     onChanged: (val) => context.read<ThemeProvider>().toggleTheme(),
                     showDivider: true,
@@ -113,21 +115,23 @@ class _SellerSettingsViewState extends State<SellerSettingsView> {
                     context: context,
                     icon: Icons.language_rounded,
                     iconColor: const Color(0xFF10B981),
-                    title: 'Language',
-                    subtitle: 'English',
+                    title: loc.translate('language'),
+                    subtitle: loc.locale.languageCode == 'si'
+                        ? 'සිංහල'
+                        : (loc.locale.languageCode == 'ta' ? 'தமிழ்' : 'English'),
                     onTap: () => Navigator.pushNamed(context, '/language'),
                     showDivider: false,
                   ),
                 ]),
 
                 // Support & Legal Section
-                _buildSectionHeader(context, 'Support & Legal'),
+                _buildSectionHeader(context, loc.translate('support_legal')),
                 _buildSectionCard(context, [
                   _buildSettingsTile(
                     context: context,
                     icon: Icons.shield_outlined,
                     iconColor: const Color(0xFF14B8A6),
-                    title: 'Privacy Policy',
+                    title: loc.translate('privacy_policy'),
                     onTap: () => Navigator.push(
                       context,
                       MaterialPageRoute(
@@ -140,7 +144,7 @@ class _SellerSettingsViewState extends State<SellerSettingsView> {
                     context: context,
                     icon: Icons.description_outlined,
                     iconColor: const Color(0xFF64748B),
-                    title: 'Terms of Service',
+                    title: loc.translate('terms_of_service'),
                     onTap: () => Navigator.push(
                       context,
                       MaterialPageRoute(
@@ -153,7 +157,7 @@ class _SellerSettingsViewState extends State<SellerSettingsView> {
                     context: context,
                     icon: Icons.help_center_outlined,
                     iconColor: const Color(0xFF0EA5E9),
-                    title: 'Help Center',
+                    title: loc.translate('help_center'),
                     subtitle: 'Seller support & FAQs',
                     onTap: () => Navigator.push(
                       context,

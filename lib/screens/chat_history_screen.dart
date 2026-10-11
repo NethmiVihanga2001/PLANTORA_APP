@@ -277,15 +277,17 @@ class _ChatHistoryScreenState extends State<ChatHistoryScreen> {
 
   String _formatDate(String isoString) {
     try {
-      final dt = DateTime.parse(isoString);
+      final dt = DateTime.parse(isoString).toLocal();
       final now = DateTime.now();
       final diff = now.difference(dt);
 
-      if (diff.inDays == 0 && now.day == dt.day) {
+      if (now.year == dt.year && now.month == dt.month && now.day == dt.day) {
         return 'Today, ${DateFormat('h:mm a').format(dt)}';
-      } else if (diff.inDays == 1 || (diff.inDays == 0 && now.day != dt.day)) {
+      }
+      final yesterday = now.subtract(const Duration(days: 1));
+      if (yesterday.year == dt.year && yesterday.month == dt.month && yesterday.day == dt.day) {
         return 'Yesterday, ${DateFormat('h:mm a').format(dt)}';
-      } else if (diff.inDays < 7) {
+      } else if (diff.inDays < 7 && !diff.isNegative) {
         return DateFormat('EEEE, h:mm a').format(dt);
       } else {
         return DateFormat('MMM d, yyyy • h:mm a').format(dt);

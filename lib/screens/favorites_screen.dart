@@ -36,6 +36,7 @@ class FavoritesScreen extends StatelessWidget {
   }
 
   Widget _buildEmpty(BuildContext context) {
+    final loc = context.watch<LocalizationProvider>();
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -51,12 +52,12 @@ class FavoritesScreen extends StatelessWidget {
           ).animate().scale(duration: 500.ms, curve: Curves.elasticOut),
           const SizedBox(height: 24),
           Text(
-            'No favourites yet',
+            loc.translate('no_favourites'),
             style: GoogleFonts.inter(fontSize: 20, fontWeight: FontWeight.bold, color: context.textPrimary),
           ).animate().fadeIn(delay: 200.ms),
           const SizedBox(height: 8),
           Text(
-            'Tap the ♥ heart on any plant\nto save it here.',
+            loc.translate('tap_heart_to_save'),
             textAlign: TextAlign.center,
             style: GoogleFonts.inter(color: context.textSecondary, fontSize: 14, height: 1.5),
           ).animate().fadeIn(delay: 300.ms),
@@ -69,7 +70,7 @@ class FavoritesScreen extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 14),
             ),
             icon: const Icon(Icons.storefront_rounded, color: Colors.white),
-            label: Text('Browse Marketplace', style: GoogleFonts.inter(color: Colors.white, fontWeight: FontWeight.bold)),
+            label: Text(loc.translate('browse_marketplace'), style: GoogleFonts.inter(color: Colors.white, fontWeight: FontWeight.bold)),
           ).animate().fadeIn(delay: 400.ms).slideY(begin: 0.2),
         ],
       ),
@@ -214,7 +215,7 @@ class FavoritesScreen extends StatelessWidget {
                                         content: Row(children: [
                                           const Icon(Icons.check_circle_rounded, color: Colors.white, size: 16),
                                           const SizedBox(width: 8),
-                                          Text('Added to cart', style: GoogleFonts.inter(fontWeight: FontWeight.w600)),
+                                          Text(context.read<LocalizationProvider>().translate('in_cart'), style: GoogleFonts.inter(fontWeight: FontWeight.w600)),
                                         ]),
                                         backgroundColor: AppColors.primaryGreen,
                                         duration: const Duration(seconds: 1),

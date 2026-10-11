@@ -49,8 +49,11 @@ backend/node_modules/
 backend/.env
 backend/uploads/
 backend/products/
+backend/avatars/
+backend/shops/
 backend/firebase-key.json
 *.txt
+*.apk
 env/
 scratch/
 

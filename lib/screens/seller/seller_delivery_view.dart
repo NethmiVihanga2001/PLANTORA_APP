@@ -10,7 +10,12 @@ import '../../../services/delivery_service.dart';
 import '../../../services/finance_service.dart';
 import '../../../theme/app_theme.dart';
 import '../../../widgets/premium_app_bar.dart';
+import '../../../services/socket_service.dart';
 import 'package:provider/provider.dart';
+import '../../../config/app_config.dart';
+import '../../../widgets/product_image.dart';
+import '../driver_chat_screen.dart';
+
 
 class _LiveRider {
   final String id;
@@ -50,52 +55,52 @@ const Map<String, LatLng> _customerLocations = {
 
 final List<_LiveRider> _initialRiders = [
   const _LiveRider(
-    id: 'd1',
-    name: 'Nimal Perera',
-    phone: '+94 77 410 9921',
-    vehiclePlate: 'WP CAB-1122',
-    vehicleType: 'Motorcycle (Honda CD110)',
+    id: 'fleet_1',
+    name: 'Naveen Perera',
+    phone: '+94 77 234 5678',
+    vehiclePlate: 'WP BAF-3491',
+    vehicleType: 'Motorcycle',
     rating: 4.9,
-    position: LatLng(6.9205, 79.8495),
-    distanceKm: 0.8,
-    isAvailable: true,
-    completedToday: 9,
-  ),
-  const _LiveRider(
-    id: 'd2',
-    name: 'Kamal Silva',
-    phone: '+94 77 882 1199',
-    vehiclePlate: 'WP BIZ-8492',
-    vehicleType: 'Motorcycle (Bajaj Pulsar)',
-    rating: 4.8,
-    position: LatLng(6.9090, 79.8560),
+    position: LatLng(6.9185, 79.8585),
     distanceKm: 0.4,
     isAvailable: true,
-    completedToday: 14,
+    completedToday: 12,
   ),
   const _LiveRider(
-    id: 'd3',
-    name: 'Sahan Kumara',
-    phone: '+94 71 550 4432',
-    vehiclePlate: 'WP DMS-3301',
-    vehicleType: 'Motorcycle (TVS Raider)',
-    rating: 4.7,
-    position: LatLng(6.9160, 79.8450),
-    distanceKm: 1.1,
-    isAvailable: false,
-    completedToday: 11,
-  ),
-  const _LiveRider(
-    id: 'd4',
-    name: 'Ruvini Fernando',
-    phone: '+94 76 990 1284',
-    vehiclePlate: 'WP GAB-7741',
-    vehicleType: 'Scooter (Yamaha RayZR)',
-    rating: 5.0,
-    position: LatLng(6.9250, 79.8580),
-    distanceKm: 1.5,
+    id: 'fleet_2',
+    name: 'Dilan Silva',
+    phone: '+94 71 890 1234',
+    vehiclePlate: 'WP BIH-7721',
+    vehicleType: 'Bike',
+    rating: 4.8,
+    position: LatLng(6.9085, 79.8520),
+    distanceKm: 0.7,
     isAvailable: true,
     completedToday: 8,
+  ),
+  const _LiveRider(
+    id: 'fleet_3',
+    name: 'Kasun Fernando',
+    phone: '+94 76 554 9910',
+    vehiclePlate: 'WP BKR-1205',
+    vehicleType: 'Motorcycle',
+    rating: 5.0,
+    position: LatLng(6.9225, 79.8610),
+    distanceKm: 0.9,
+    isAvailable: true,
+    completedToday: 15,
+  ),
+  const _LiveRider(
+    id: 'fleet_4',
+    name: 'Sahan Jayawardena',
+    phone: '+94 72 331 4455',
+    vehiclePlate: 'WP BPC-8890',
+    vehicleType: 'Scooter',
+    rating: 4.9,
+    position: LatLng(6.8995, 79.8565),
+    distanceKm: 1.2,
+    isAvailable: true,
+    completedToday: 10,
   ),
 ];
 
@@ -118,6 +123,8 @@ class _BroadcastState {
 }
 
 class SellerDeliveryView extends StatefulWidget {
+
+
   final VoidCallback onMenuTap;
   const SellerDeliveryView({super.key, required this.onMenuTap});
 
@@ -130,6 +137,8 @@ class _SellerDeliveryViewState extends State<SellerDeliveryView>
   final OrderService _orderService = OrderService();
   final DeliveryService _deliveryService = DeliveryService();
   final MapController _mapController = MapController();
+  StreamSubscription? _socketStatusSub;
+  StreamSubscription? _socketLocationSub;
 
   List<OrderModel> _readyOrders = [];
   List<OrderModel> _activeOrders = [];
@@ -153,12 +162,58 @@ class _SellerDeliveryViewState extends State<SellerDeliveryView>
       vsync: this,
       duration: const Duration(seconds: 2),
     )..repeat(reverse: true);
+
+    _socketStatusSub = SocketService().orderStatusStream.listen((data) {
+      if (mounted) _loadData();
+    });
+
+    _socketLocationSub = SocketService().locationStream.listen((data) {
+      if (mounted && data['lat'] != null && data['lng'] != null) {
+        final lat = (data['lat'] as num).toDouble();
+        final lng = (data['lng'] as num).toDouble();
+        final driverId = data['driverId']?.toString() ?? data['orderId']?.toString() ?? 'active_driver';
+        setState(() {
+          final idx = _riders.indexWhere((r) => r.id == driverId);
+          if (idx != -1) {
+            _riders[idx] = _LiveRider(
+              id: _riders[idx].id,
+              name: _riders[idx].name,
+              phone: _riders[idx].phone,
+              vehiclePlate: _riders[idx].vehiclePlate,
+              vehicleType: _riders[idx].vehicleType,
+              rating: _riders[idx].rating,
+              position: LatLng(lat, lng),
+              distanceKm: 0.2,
+              isAvailable: true,
+              completedToday: _riders[idx].completedToday,
+            );
+          } else {
+            _riders.add(_LiveRider(
+              id: driverId,
+              name: 'Active Rider',
+              phone: '',
+              vehiclePlate: '',
+              vehicleType: 'Motorcycle',
+              rating: 5.0,
+              position: LatLng(lat, lng),
+              distanceKm: 0.2,
+              isAvailable: true,
+              completedToday: 1,
+            ));
+          }
+        });
+        _mapController.move(LatLng(lat, lng), 15.0);
+      }
+    });
+
     _loadData();
   }
 
   @override
   void dispose() {
     _pulseController.dispose();
+    _socketStatusSub?.cancel();
+    _socketLocationSub?.cancel();
     for (final s in _broadcastStates.values) {
       s.countdownTimer?.cancel();
       s.autoAcceptTimer?.cancel();
@@ -166,76 +221,46 @@ class _SellerDeliveryViewState extends State<SellerDeliveryView>
     super.dispose();
   }
 
-  List<OrderModel> _getSampleOrders() => [
-    OrderModel(
-      id: 'ORD-2026-9481',
-      customerId: 'c1',
-      customerName: 'Amal Perera',
-      totalAmount: 5450.0,
-      subtotalAmount: 4950.0,
-      deliveryFee: 500.0,
-      shippingAddress: 'No. 45, Flower Road, Colombo 07',
-      phone: '+94 77 482 9102',
-      status: 'Preparing',
-      createdAt: DateTime.now().subtract(const Duration(minutes: 25)),
-      items: [
-        OrderItem(productId: 'p1', title: 'Monstera Deliciosa', price: 3500.0, quantity: 1, sellerId: 's1', emoji: '🪴', imageUrl: 'https://images.unsplash.com/photo-1614594975525-e45190c55d40?w=100'),
-        OrderItem(productId: 'p2', title: 'Organic Botanical Fertilizer', price: 1950.0, quantity: 1, sellerId: 's1', emoji: '🌱', imageUrl: 'https://images.unsplash.com/photo-1592982537447-6f296d19f074?w=100'),
-      ],
-    ),
-    OrderModel(
-      id: 'ORD-2026-8812',
-      customerId: 'c2',
-      customerName: 'Dinusha Wickramasinghe',
-      totalAmount: 8200.0,
-      subtotalAmount: 7600.0,
-      deliveryFee: 600.0,
-      shippingAddress: '12/A, Kandy Road, Kiribathgoda',
-      phone: '+94 71 883 2049',
-      status: 'Preparing',
-      createdAt: DateTime.now().subtract(const Duration(hours: 2)),
-      items: [
-        OrderItem(productId: 'p3', title: 'Fiddle Leaf Fig Tree', price: 6800.0, quantity: 1, sellerId: 's1', emoji: '🌿', imageUrl: 'https://images.unsplash.com/photo-1606228399580-c117eb8a892b?w=100'),
-        OrderItem(productId: 'p4', title: 'Terracotta Clay Pot', price: 1400.0, quantity: 1, sellerId: 's1', emoji: '🏺', imageUrl: 'https://images.unsplash.com/photo-1456930722108-e7a9b0e271eb?w=100'),
-      ],
-    ),
-    OrderModel(
-      id: 'ORD-2026-7530',
-      customerId: 'c3',
-      customerName: 'Kasun Rajapaksha',
-      totalAmount: 3850.0,
-      subtotalAmount: 3400.0,
-      deliveryFee: 450.0,
-      shippingAddress: '88, Beach Road, Mount Lavinia',
-      phone: '+94 75 991 4028',
-      status: 'Out for Delivery',
-      driverName: 'Kamal Silva',
-      driverPhone: '+94 77 882 1199',
-      vehicleType: 'Motorcycle',
-      vehiclePlate: 'WP BIZ-8492',
-      createdAt: DateTime.now().subtract(const Duration(hours: 4)),
-      items: [
-        OrderItem(productId: 'p5', title: 'Golden Pothos Hanging Vine', price: 1450.0, quantity: 2, sellerId: 's1', emoji: '🍃', imageUrl: 'https://images.unsplash.com/photo-1645802111494-b2fc45bcf6f1?w=100'),
-        OrderItem(productId: 'p6', title: 'Plant Moisture Meter', price: 950.0, quantity: 1, sellerId: 's1', emoji: '⚡', imageUrl: 'https://images.unsplash.com/photo-1634626159516-79c29cc3697e?w=100'),
-      ],
-    ),
-  ];
 
   Future<void> _loadData() async {
     setState(() => _isLoading = true);
     final all = await _orderService.getOrders();
-    final samples = _getSampleOrders();
-    for (final s in samples) {
-      if (!all.any((o) => o.id == s.id)) all.add(s);
-    }
     _readyOrders = all.where((o) => o.status == 'Accepted' || o.status == 'Preparing').toList();
     _activeOrders = all.where((o) => o.status == 'Shipped' || o.status == 'Out for Delivery').toList();
     _deliveredOrders = all.where((o) => o.status == 'Delivered').toList();
+
+    try {
+      final drivers = await _deliveryService.getAvailableDrivers();
+      if (drivers.isNotEmpty) {
+        final List<_LiveRider> fetchedDrivers = drivers.map((d) => _LiveRider(
+          id: d.id,
+          name: d.name,
+          phone: d.phone,
+          vehiclePlate: d.vehiclePlate,
+          vehicleType: d.vehicleType,
+          rating: d.rating,
+          position: LatLng(d.lat, d.lng),
+          distanceKm: d.distanceKm > 0 ? d.distanceKm : 0.5,
+          isAvailable: true,
+          completedToday: d.totalDeliveries,
+        )).toList();
+
+        for (final fd in fetchedDrivers) {
+          final existingIdx = _riders.indexWhere((r) => r.id == fd.id);
+          if (existingIdx != -1) {
+            _riders[existingIdx] = fd;
+          } else {
+            _riders.add(fd);
+          }
+        }
+      }
+    } catch (_) {}
+
     if (mounted) setState(() => _isLoading = false);
   }
 
   // 1-HOUR COUNTDOWN & BROADCAST TO RIDERS
-  void _broadcastToRiders(OrderModel order, {bool isRebroadcast = false}) {
+  void _broadcastToRiders(OrderModel order, {bool isRebroadcast = false}) async {
     _broadcastStates[order.id]?.countdownTimer?.cancel();
     _broadcastStates[order.id]?.autoAcceptTimer?.cancel();
 
@@ -266,10 +291,21 @@ class _SellerDeliveryViewState extends State<SellerDeliveryView>
 
     setState(() {});
 
+    final double fee = (order.deliveryFee != null && order.deliveryFee! > 0)
+        ? order.deliveryFee!
+        : 500.0;
+
+    // 1. Send Ring Delivery to Backend REST API
+    _orderService.ringForDelivery(order.id, fee);
+
+    // 2. Broadcast via Socket.IO
+    SocketService().ringForDelivery(order.id, fee);
+
+    final count = _riders.where((r) => r.isAvailable).length;
     _showSnack(
       isRebroadcast
           ? '🔔 Re-ringing all nearby riders! 1-hour pickup timer reset.'
-          : '📡 Order broadcasted to 4 nearby riders! Awaiting rider acceptance.',
+          : '📡 Order broadcasted to $count nearby riders! Awaiting rider acceptance.',
       const Color(0xFF10B981),
     );
 
@@ -281,7 +317,7 @@ class _SellerDeliveryViewState extends State<SellerDeliveryView>
       backgroundColor: Colors.transparent,
       builder: (ctx) => _BroadcastWaitingSheet(
         order: order,
-        ridersCount: _riders.where((r) => r.isAvailable).length,
+        ridersCount: count,
         onRiderAccepted: (rider) async {
           Navigator.pop(ctx);
           await _onRiderAcceptedOrder(order, rider);
@@ -449,11 +485,9 @@ class _SellerDeliveryViewState extends State<SellerDeliveryView>
 
     return Scaffold(
       backgroundColor: context.scaffoldBg,
-      body: _riders.isEmpty
-          ? const Center(child: CircularProgressIndicator())
-            : CustomScrollView(
-                physics: const BouncingScrollPhysics(),
-                slivers: [
+      body: CustomScrollView(
+        physics: const BouncingScrollPhysics(),
+        slivers: [
                   // ── Sticky header ───────────────────────────────────────
                   SliverToBoxAdapter(child: _buildHeader()),
 
@@ -518,7 +552,12 @@ class _SellerDeliveryViewState extends State<SellerDeliveryView>
                   ],
 
                   if (_readyOrders.isEmpty && _activeOrders.isEmpty && _deliveredOrders.isEmpty)
-                    SliverFillRemaining(child: _buildEmpty()),
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.only(top: 10, bottom: 20),
+                        child: _buildEmpty(),
+                      ),
+                    ),
 
                   const SliverToBoxAdapter(child: SizedBox(height: 32)),
                 ],
@@ -678,20 +717,14 @@ class _SellerDeliveryViewState extends State<SellerDeliveryView>
     final onlineCount = _riders.where((r) => r.isAvailable).length;
 
     final List<Polyline> polylines = [];
-    final activeRider = _riders.firstWhere((r) => r.id == 'd2');
-    polylines.add(Polyline(
-      points: [_storeLocation, activeRider.position],
-      strokeWidth: 4.5,
-      color: const Color(0xFF10B981),
-      strokeCap: StrokeCap.round,
-    ));
-    final customerPos = _customerLocations['ORD-2026-9481'] ?? const LatLng(6.9080, 79.8580);
-    polylines.add(Polyline(
-      points: [_storeLocation, customerPos],
-      strokeWidth: 3.5,
-      color: Colors.blueAccent.withValues(alpha: 0.8),
-      strokeCap: StrokeCap.round,
-    ));
+    for (final rider in _riders) {
+      polylines.add(Polyline(
+        points: [_storeLocation, rider.position],
+        strokeWidth: 3.5,
+        color: rider.isAvailable ? const Color(0xFF10B981) : Colors.orangeAccent,
+        strokeCap: StrokeCap.round,
+      ));
+    }
 
     return Stack(
       children: [
@@ -743,30 +776,82 @@ class _SellerDeliveryViewState extends State<SellerDeliveryView>
                   ),
                 ),
                 ..._riders.map((rider) => Marker(
-                  point: rider.position, width: 48, height: 48,
+                  point: rider.position, width: 88, height: 60,
                   child: GestureDetector(
                     onTap: () => _showRiderInfo(rider),
-                    child: Container(
-                      padding: const EdgeInsets.all(7),
-                      decoration: BoxDecoration(
-                        color: rider.isAvailable ? const Color(0xFF10B981) : Colors.orange,
-                        shape: BoxShape.circle,
-                        border: Border.all(color: Colors.white, width: 2),
-                        boxShadow: [BoxShadow(
-                          color: (rider.isAvailable ? const Color(0xFF10B981) : Colors.orange).withValues(alpha: 0.5),
-                          blurRadius: 8,
-                        )],
-                      ),
-                      child: const Icon(Icons.two_wheeler_rounded, color: Colors.white, size: 16),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.82),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: rider.isAvailable ? const Color(0xFF10B981) : Colors.orange,
+                              width: 1,
+                            ),
+                          ),
+                          child: Text(
+                            '${rider.name.split(' ').first} (${rider.distanceKm.toStringAsFixed(1)}km)',
+                            style: GoogleFonts.inter(color: Colors.white, fontSize: 9.5, fontWeight: FontWeight.bold),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Container(
+                          padding: const EdgeInsets.all(6),
+                          decoration: BoxDecoration(
+                            color: rider.isAvailable ? const Color(0xFF10B981) : Colors.orange,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white, width: 2),
+                            boxShadow: [
+                              BoxShadow(
+                                color: (rider.isAvailable ? const Color(0xFF10B981) : Colors.orange).withValues(alpha: 0.5),
+                                blurRadius: 8,
+                              ),
+                            ],
+                          ),
+                          child: const Icon(Icons.two_wheeler_rounded, color: Colors.white, size: 16),
+                        ),
+                      ],
                     ),
                   ),
                 )),
-                Marker(
-                  point: customerPos, width: 40, height: 40,
-                  child: const Icon(Icons.location_pin, color: Colors.redAccent, size: 38),
-                ),
               ]),
             ],
+          ),
+        ),
+
+        // Center-top: Available bikes badge
+        Positioned(
+          top: 10, left: 100, right: 100,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: const Color(0xFF044E39).withValues(alpha: 0.95),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: const Color(0xFF10B981), width: 1.2),
+              boxShadow: [
+                BoxShadow(color: Colors.black.withValues(alpha: 0.2), blurRadius: 8, offset: const Offset(0, 3)),
+              ],
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.two_wheeler_rounded, color: Color(0xFF34D399), size: 15),
+                const SizedBox(width: 5),
+                Flexible(
+                  child: Text(
+                    '$onlineCount Bikes Available',
+                    style: GoogleFonts.outfit(color: Colors.white, fontSize: 11.5, fontWeight: FontWeight.bold),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
 
@@ -1067,12 +1152,45 @@ class _SellerDeliveryViewState extends State<SellerDeliveryView>
     ),
   );
 
+  String _getPlantImageUrl(String title, String? imageUrl) {
+    if (imageUrl != null && imageUrl.trim().isNotEmpty) {
+      if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
+        return imageUrl;
+      }
+      if (imageUrl.startsWith('/uploads')) {
+        return '${AppConfig.baseUrl}$imageUrl';
+      }
+      return imageUrl;
+    }
+
+    final t = title.trim().toLowerCase();
+    if (t.contains('karapincha') || t.contains('curry')) {
+      return 'https://images.unsplash.com/photo-1615485290382-441e4d049cb5?auto=format&fit=crop&w=400&q=80';
+    } else if (t.contains('kumarika') || t.contains('aloe')) {
+      return 'https://images.unsplash.com/photo-1596547609652-9cf5d8d76921?auto=format&fit=crop&w=400&q=80';
+    } else if (t.contains('kohomba') || t.contains('neem')) {
+      return 'https://images.unsplash.com/photo-1518531933037-91b2f5f229cc?auto=format&fit=crop&w=400&q=80';
+    } else if (t.contains('monstera')) {
+      return 'https://images.unsplash.com/photo-1614594975525-e45190c55d0b?auto=format&fit=crop&w=400&q=80';
+    } else if (t.contains('lavender')) {
+      return 'https://images.unsplash.com/photo-1528183429752-a97d0bf99b5a?auto=format&fit=crop&w=400&q=80';
+    } else if (t.contains('rosemary')) {
+      return 'https://images.unsplash.com/photo-1515542706656-c30e16a65529?auto=format&fit=crop&w=400&q=80';
+    } else if (t.contains('mint')) {
+      return 'https://images.unsplash.com/photo-1628556270448-4d4e4148e1b1?auto=format&fit=crop&w=400&q=80';
+    } else if (t.contains('snake') || t.contains('sansevieria')) {
+      return 'https://images.unsplash.com/photo-1593482892290-f54927ae1bf6?auto=format&fit=crop&w=400&q=80';
+    }
+    return 'https://images.unsplash.com/photo-1545241047-6083a3684587?auto=format&fit=crop&w=400&q=80';
+  }
+
   Widget _buildOrderItemsList(List<OrderItem> items) {
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       physics: const BouncingScrollPhysics(),
       child: Row(
         children: items.map((item) {
+          final imgUrl = _getPlantImageUrl(item.title, item.imageUrl);
           return Container(
             margin: const EdgeInsets.only(right: 8),
             padding: const EdgeInsets.only(right: 8, top: 4, bottom: 4, left: 4),
@@ -1084,35 +1202,13 @@ class _SellerDeliveryViewState extends State<SellerDeliveryView>
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (item.imageUrl != null && item.imageUrl!.isNotEmpty)
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(16),
-                    child: Image.network(
-                      item.imageUrl!,
-                      width: 24,
-                      height: 24,
-                      fit: BoxFit.cover,
-                      errorBuilder: (context, error, stackTrace) => Container(
-                        width: 24,
-                        height: 24,
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF10B981).withValues(alpha: 0.1),
-                          shape: BoxShape.circle,
-                        ),
-                        child: Center(child: Text(item.emoji, style: const TextStyle(fontSize: 12))),
-                      ),
-                    ),
-                  )
-                else
-                  Container(
-                    width: 24,
-                    height: 24,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF10B981).withValues(alpha: 0.1),
-                      shape: BoxShape.circle,
-                    ),
-                    child: Center(child: Text(item.emoji, style: const TextStyle(fontSize: 12))),
-                  ),
+                ProductImage(
+                  imageUrl: (item.imageUrl != null && item.imageUrl!.isNotEmpty) ? item.imageUrl : imgUrl,
+                  width: 26,
+                  height: 26,
+                  fit: BoxFit.cover,
+                  borderRadius: BorderRadius.circular(16),
+                ),
                 const SizedBox(width: 6),
                 Text(
                   item.title,
@@ -1706,20 +1802,44 @@ class _SellerDeliveryViewState extends State<SellerDeliveryView>
               ],
             ),
           ),
-          if (order.driverPhone != null)
-            GestureDetector(
-              onTap: () => _showContactDialog(order.driverName!, order.driverPhone!),
-              child: Container(
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(
-                  color: const Color(0xFF10B981).withValues(alpha: 0.15),
-                  shape: BoxShape.circle,
-                  border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.3)),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              GestureDetector(
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => DriverChatScreen(order: order)),
+                  );
+                },
+                child: Container(
+                  width: 36,
+                  height: 36,
+                  margin: const EdgeInsets.only(right: 8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF10B981).withValues(alpha: 0.15),
+                    shape: BoxShape.circle,
+                    border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.3)),
+                  ),
+                  child: const Icon(Icons.chat_bubble_rounded, color: Color(0xFF10B981), size: 16),
                 ),
-                child: const Icon(Icons.phone_rounded, color: Color(0xFF10B981), size: 17),
               ),
-            ),
+              if (order.driverPhone != null)
+                GestureDetector(
+                  onTap: () => _showContactDialog(order.driverName!, order.driverPhone!),
+                  child: Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF10B981).withValues(alpha: 0.15),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.3)),
+                    ),
+                    child: const Icon(Icons.phone_rounded, color: Color(0xFF10B981), size: 17),
+                  ),
+                ),
+            ],
+          ),
         ],
       ),
     );
@@ -1759,43 +1879,47 @@ class _SellerDeliveryViewState extends State<SellerDeliveryView>
 
   Widget _buildEmpty() {
     return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          AnimatedBuilder(
-            animation: _pulseController,
-            builder: (_, __) => Container(
-              width: 90 + _pulseController.value * 6,
-              height: 90 + _pulseController.value * 6,
-              decoration: BoxDecoration(
-                color: const Color(0xFF10B981).withValues(alpha: 0.08 + _pulseController.value * 0.04),
-                shape: BoxShape.circle,
-                border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.2), width: 1.5),
+      child: SingleChildScrollView(
+        physics: const BouncingScrollPhysics(),
+        padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            AnimatedBuilder(
+              animation: _pulseController,
+              builder: (_, __) => Container(
+                width: 76 + _pulseController.value * 6,
+                height: 76 + _pulseController.value * 6,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF10B981).withValues(alpha: 0.08 + _pulseController.value * 0.04),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.2), width: 1.5),
+                ),
+                child: const Icon(Icons.two_wheeler_rounded, color: Color(0xFF10B981), size: 36),
               ),
-              child: const Icon(Icons.two_wheeler_rounded, color: Color(0xFF10B981), size: 40),
             ),
-          ),
-          const SizedBox(height: 24),
-          Text('All Clear!', style: GoogleFonts.outfit(color: context.textPrimary, fontSize: 20, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
-          Text(
-            'No orders awaiting dispatch.\nNew orders will appear here automatically.',
-            style: GoogleFonts.inter(color: context.textSecondary, fontSize: 13, height: 1.6),
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 24),
-          OutlinedButton.icon(
-            onPressed: _loadData,
-            icon: const Icon(Icons.refresh_rounded, size: 16),
-            label: const Text('Refresh'),
-            style: OutlinedButton.styleFrom(
-              foregroundColor: const Color(0xFF10B981),
-              side: const BorderSide(color: Color(0xFF10B981)),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            const SizedBox(height: 16),
+            Text('All Clear!', style: GoogleFonts.outfit(color: context.textPrimary, fontSize: 19, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 6),
+            Text(
+              'No orders awaiting dispatch.\nNew orders will appear here automatically.',
+              style: GoogleFonts.inter(color: context.textSecondary, fontSize: 12.5, height: 1.5),
+              textAlign: TextAlign.center,
             ),
-          ),
-        ],
-      ).animate().fadeIn(duration: 500.ms).scale(begin: const Offset(0.9, 0.9)),
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              onPressed: _loadData,
+              icon: const Icon(Icons.refresh_rounded, size: 16),
+              label: const Text('Refresh'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFF10B981),
+                side: const BorderSide(color: Color(0xFF10B981)),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+          ],
+        ).animate().fadeIn(duration: 500.ms).scale(begin: const Offset(0.9, 0.9)),
+      ),
     );
   }
 }
@@ -1819,6 +1943,7 @@ class _BroadcastWaitingSheet extends StatefulWidget {
 class _BroadcastWaitingSheetState extends State<_BroadcastWaitingSheet>
     with SingleTickerProviderStateMixin {
   late AnimationController _radarController;
+  StreamSubscription? _socketSub;
   bool _riderFound = false;
   _LiveRider? _acceptedRider;
 
@@ -1830,12 +1955,27 @@ class _BroadcastWaitingSheetState extends State<_BroadcastWaitingSheet>
       duration: const Duration(milliseconds: 1000),
     )..repeat();
 
-    // Rider Kamal Silva simulates receiving and deciding to accept the delivery after 2.8 seconds
-    Future.delayed(const Duration(milliseconds: 2800), () {
-      if (mounted) {
+    _socketSub = SocketService().orderStatusStream.listen((data) {
+      if (mounted && data['orderId']?.toString() == widget.order.id.toString()) {
+        final driverName = data['driverName']?.toString() ?? 'Assigned Rider';
+        final driverPhone = data['driverPhone']?.toString() ?? '';
+        final vehicleType = data['vehicleType']?.toString() ?? 'Motorcycle';
+        final vehiclePlate = data['vehiclePlate']?.toString() ?? 'WP BIZ-8492';
+
         setState(() {
           _riderFound = true;
-          _acceptedRider = _initialRiders[1]; // Kamal Silva
+          _acceptedRider = _LiveRider(
+            id: data['driverId']?.toString() ?? 'driver',
+            name: driverName,
+            phone: driverPhone,
+            vehiclePlate: vehiclePlate,
+            vehicleType: vehicleType,
+            rating: 5.0,
+            position: _storeLocation,
+            distanceKm: 0.3,
+            isAvailable: false,
+            completedToday: 5,
+          );
         });
       }
     });
@@ -1844,6 +1984,7 @@ class _BroadcastWaitingSheetState extends State<_BroadcastWaitingSheet>
   @override
   void dispose() {
     _radarController.dispose();
+    _socketSub?.cancel();
     super.dispose();
   }
 

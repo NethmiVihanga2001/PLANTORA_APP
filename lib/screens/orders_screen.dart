@@ -8,6 +8,7 @@ import 'package:intl/intl.dart';
 import '../theme/app_theme.dart';
 import '../config/app_config.dart';
 import '../widgets/premium_app_bar.dart';
+import '../widgets/product_image.dart';
 import '../widgets/app_drawer.dart';
 import '../models/order_model.dart';
 import '../services/order_service.dart';
@@ -17,6 +18,12 @@ import '../models/user_model.dart';
 import '../providers/auth_provider.dart';
 import '../providers/localization_provider.dart';
 import 'order_tracking_screen.dart';
+import '../services/chat_service.dart';
+import 'chat_detail_screen.dart';
+import 'driver_chat_screen.dart';
+
+import 'dart:async';
+import '../services/socket_service.dart';
 
 class OrdersScreen extends StatefulWidget {
   const OrdersScreen({super.key});
@@ -29,6 +36,7 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
   late TabController _tabController;
   final OrderService _orderService = OrderService();
   final AuthService _authService = AuthService();
+  StreamSubscription? _socketSub;
   
   List<OrderModel> _orders = [];
   bool _isLoading = true;
@@ -38,8 +46,31 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+
+    _socketSub = SocketService().orderStatusStream.listen((data) {
+      if (mounted) {
+        final deletedId = data['orderId'];
+        if (data['status'] == 'Deleted' && deletedId != null) {
+          setState(() {
+            _orders.removeWhere((o) => o.id == deletedId);
+          });
+        } else {
+          _loadData();
+        }
+      }
+    });
+
     _loadData();
   }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    _socketSub?.cancel();
+    ScaffoldMessenger.of(context).clearSnackBars();
+    super.dispose();
+  }
+
 
   Future<void> _loadData() async {
     setState(() => _isLoading = true);
@@ -56,7 +87,7 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
       drawer: const AppDrawer(),
       appBar: PremiumAppBar(
         title: loc.translate('my_orders'),
-        subtitle: loc.translate('my_orders'),
+        subtitle: loc.translate('track_order'),
         bottomWidget: TabBar(
           controller: _tabController,
           labelColor: const Color(0xFF10B981),
@@ -66,7 +97,7 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
           labelStyle: GoogleFonts.outfit(fontWeight: FontWeight.w700, fontSize: 14),
           tabs: [
             Tab(text: loc.translate('active_orders')),
-            Tab(text: loc.translate('my_orders')),
+            Tab(text: loc.translate('order_history')),
           ],
         ),
       ),
@@ -83,6 +114,7 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
   }
 
   Widget _buildOrderList({required bool active}) {
+    final loc = context.watch<LocalizationProvider>();
     final filtered = _orders.where((o) {
       final isDone = o.status == 'Delivered' || o.status == 'Cancelled';
       return active ? !isDone : isDone;
@@ -107,12 +139,12 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
             ),
             const SizedBox(height: 16),
             Text(
-              active ? 'No Active Orders' : 'No Order History',
+              active ? loc.translate('no_active_orders') : loc.translate('no_order_history'),
               style: GoogleFonts.outfit(fontSize: 18, fontWeight: FontWeight.bold, color: context.textPrimary),
             ),
             const SizedBox(height: 6),
             Text(
-              active ? 'Your ongoing plant deliveries will show up here.' : 'Past completed purchases will be stored here.',
+              active ? loc.translate('ongoing_deliveries_desc') : loc.translate('past_purchases_desc'),
               style: GoogleFonts.inter(fontSize: 13, color: context.textSecondary),
             ),
           ],
@@ -145,17 +177,17 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
                         children: [
                           const Icon(Icons.delete_sweep_rounded, color: Colors.redAccent, size: 24),
                           const SizedBox(width: 8),
-                          Text('Delete Order', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, fontSize: 18, color: context.textPrimary)),
+                          Text(loc.translate('delete_order'), style: GoogleFonts.outfit(fontWeight: FontWeight.bold, fontSize: 18, color: context.textPrimary)),
                         ],
                       ),
                       content: Text(
-                        'Are you sure you want to delete Order #${order.id.length > 8 ? order.id.substring(0, 8).toUpperCase() : order.id.toUpperCase()} from your order history?',
+                        '${loc.translate('delete_order_confirm')} (#${order.id.length > 8 ? order.id.substring(0, 8).toUpperCase() : order.id.toUpperCase()})',
                         style: GoogleFonts.inter(fontSize: 13.5, color: context.textSecondary),
                       ),
                       actions: [
                         TextButton(
                           onPressed: () => Navigator.pop(ctx, false),
-                          child: Text('Cancel', style: GoogleFonts.inter(fontWeight: FontWeight.w600, color: context.textSecondary)),
+                          child: Text(loc.translate('cancel'), style: GoogleFonts.inter(fontWeight: FontWeight.w600, color: context.textSecondary)),
                         ),
                         ElevatedButton(
                           onPressed: () => Navigator.pop(ctx, true),
@@ -163,7 +195,7 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
                             backgroundColor: Colors.redAccent,
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                           ),
-                          child: Text('Delete', style: GoogleFonts.inter(fontWeight: FontWeight.bold, color: Colors.white)),
+                          child: Text(loc.translate('delete'), style: GoogleFonts.inter(fontWeight: FontWeight.bold, color: Colors.white)),
                         ),
                       ],
                     ),
@@ -171,20 +203,34 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
                 },
                 onDismissed: (direction) async {
                   final deletedId = order.id;
+                  final originalIndex = _orders.indexOf(order);
+                  final removedOrder = order;
                   HapticFeedback.mediumImpact();
                   setState(() {
                     _orders.removeWhere((o) => o.id == deletedId);
                   });
                   await _orderService.deleteOrder(deletedId);
                   if (mounted) {
+                    ScaffoldMessenger.of(context).clearSnackBars();
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
+                        duration: const Duration(seconds: 2),
                         content: Row(
                           children: [
                             const Icon(Icons.check_circle_rounded, color: Colors.white, size: 18),
                             const SizedBox(width: 8),
-                            Text('Order deleted from history', style: GoogleFonts.inter(fontWeight: FontWeight.w600)),
+                            Text(loc.translate('order_deleted'), style: GoogleFonts.inter(fontWeight: FontWeight.w600)),
                           ],
+                        ),
+                        action: SnackBarAction(
+                          label: loc.translate('undo'),
+                          textColor: const Color(0xFF34D399),
+                          onPressed: () async {
+                            setState(() {
+                              _orders.insert(originalIndex, removedOrder);
+                            });
+                            await _orderService.restoreOrder(deletedId);
+                          },
                         ),
                         backgroundColor: const Color(0xFF10B981),
                         behavior: SnackBarBehavior.floating,
@@ -205,7 +251,7 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
                     mainAxisAlignment: MainAxisAlignment.end,
                     children: [
                       Text(
-                        'Swipe to Delete',
+                        loc.translate('swipe_to_delete'),
                         style: GoogleFonts.outfit(
                           color: Colors.white,
                           fontWeight: FontWeight.bold,
@@ -227,6 +273,7 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
   }
 
   Widget _buildOrderCard(OrderModel order) {
+    final loc = context.watch<LocalizationProvider>();
     final status = order.orderStatus;
     final isSeller = _currentUser?.role == 'Seller';
     final customerName = _currentUser?.name ?? 'Valued Customer';
@@ -256,7 +303,7 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
                   children: [
                     Expanded(
                       child: Text(
-                        'Order #${order.id.length > 12 ? order.id.substring(0, 12).toUpperCase() : order.id.toUpperCase()}',
+                        '${loc.translate('order')} #${order.id.length > 12 ? order.id.substring(0, 12).toUpperCase() : order.id.toUpperCase()}',
                         style: GoogleFonts.outfit(fontWeight: FontWeight.w800, fontSize: 16.5, color: context.textPrimary),
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -275,7 +322,7 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
                           Icon(status.icon, color: status.color, size: 13),
                           const SizedBox(width: 4),
                           Text(
-                            status.name.toUpperCase(),
+                            loc.translate(status.name.toLowerCase()).toUpperCase(),
                             style: GoogleFonts.inter(color: status.color, fontWeight: FontWeight.w800, fontSize: 10.5, letterSpacing: 0.4),
                           ),
                         ],
@@ -293,7 +340,7 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
                         Icon(Icons.schedule_rounded, size: 13, color: context.textSecondary),
                         const SizedBox(width: 4),
                         Text(
-                          DateFormat('MMM dd, yyyy • hh:mm a').format(order.createdAt),
+                          DateFormat('MMM dd, yyyy • hh:mm a').format(order.createdAt.toLocal()),
                           style: GoogleFonts.inter(color: context.textSecondary, fontSize: 11.5, fontWeight: FontWeight.w500),
                         ),
                       ],
@@ -305,7 +352,7 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
                         borderRadius: BorderRadius.circular(6),
                       ),
                       child: Text(
-                        'ONLINE PAID',
+                        loc.translate('online_paid'),
                         style: GoogleFonts.inter(fontSize: 9.5, fontWeight: FontWeight.w800, color: const Color(0xFF10B981)),
                       ),
                     ),
@@ -383,7 +430,7 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text('Total Amount Paid', style: GoogleFonts.inter(color: context.textSecondary, fontSize: 14, fontWeight: FontWeight.w500)),
+                    Text(loc.translate('total_amount_paid'), style: GoogleFonts.inter(color: context.textSecondary, fontSize: 14, fontWeight: FontWeight.w500)),
                     Text(
                       'Rs. ${order.totalAmount.toStringAsFixed(2)}',
                       style: GoogleFonts.outfit(fontWeight: FontWeight.w800, fontSize: 20, color: const Color(0xFF10B981)),
@@ -433,7 +480,7 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                             padding: const EdgeInsets.symmetric(vertical: 12),
                           ),
-                          child: Text('Reject', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
+                          child: Text(loc.translate('reject'), style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
                         ),
                       ),
                       const SizedBox(width: 12),
@@ -446,7 +493,7 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                             padding: const EdgeInsets.symmetric(vertical: 12),
                           ),
-                          child: Text('Update Status', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
+                          child: Text(loc.translate('update_status'), style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
                         ),
                       ),
                     ],
@@ -472,7 +519,7 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
                                label: FittedBox(
                                  fit: BoxFit.scaleDown,
                                  child: Text(
-                                   'Download Slip',
+                                   loc.translate('download_slip'),
                                    style: GoogleFonts.inter(fontWeight: FontWeight.bold, fontSize: 12, color: const Color(0xFF10B981)),
                                  ),
                                ),
@@ -504,7 +551,7 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
                                  label: FittedBox(
                                    fit: BoxFit.scaleDown,
                                    child: Text(
-                                     'Live Tracking',
+                                     loc.translate('live_tracking'),
                                      style: GoogleFonts.inter(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.white),
                                    ),
                                  ),
@@ -519,19 +566,95 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
                            ),
                          ],
                        ),
+                       const SizedBox(height: 10),
+                       Row(
+                         children: [
+                           // Chat Store / Nursery
+                           Expanded(
+                             child: OutlinedButton.icon(
+                               onPressed: () async {
+                                 final sellerId = order.items.isNotEmpty ? order.items.first.sellerId : 'seller';
+                                 final plantTitle = order.items.isNotEmpty ? order.items.first.title : 'Order #${order.id.length > 6 ? order.id.substring(0, 6) : order.id}';
+                                 final plantImg = order.items.isNotEmpty ? order.items.first.imageUrl : null;
+                                 final customerId = _currentUser?.id ?? order.customerId;
+                                 final custName = _currentUser?.name ?? order.customerName;
+
+                                 final chatData = await ChatService().initiateChat(
+                                   customerId,
+                                   sellerId,
+                                   custName,
+                                   'Green Life Nursery',
+                                   null,
+                                 );
+                                 if (context.mounted) {
+                                   final chatId = (chatData?['chatId'] ?? chatData?['id'] ?? 'chat_${customerId}_$sellerId').toString();
+                                   Navigator.push(
+                                     context,
+                                     MaterialPageRoute(
+                                       builder: (_) => ChatDetailScreen(
+                                         chatId: chatId,
+                                         otherParticipantName: 'Nursery Store',
+                                         otherParticipantRole: 'Seller',
+                                         plantTitle: plantTitle,
+                                         plantPrice: order.totalAmount.toStringAsFixed(0),
+                                         plantImageUrl: plantImg,
+                                       ),
+                                     ),
+                                   );
+                                 }
+                               },
+                               icon: const Icon(Icons.storefront_rounded, size: 16, color: Color(0xFF10B981)),
+                               label: Text(
+                                 'Chat Store',
+                                 style: GoogleFonts.inter(fontWeight: FontWeight.w700, fontSize: 12, color: const Color(0xFF10B981)),
+                               ),
+                               style: OutlinedButton.styleFrom(
+                                 side: const BorderSide(color: Color(0xFF10B981), width: 1.2),
+                                 padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+                                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                               ),
+                             ),
+                           ),
+                           if (order.driverName != null || order.driverId != null) ...[
+                             const SizedBox(width: 10),
+                             Expanded(
+                               child: ElevatedButton.icon(
+                                 onPressed: () {
+                                   Navigator.push(
+                                     context,
+                                     MaterialPageRoute(builder: (_) => DriverChatScreen(order: order)),
+                                   );
+                                 },
+                                 icon: const Icon(Icons.delivery_dining_rounded, size: 18, color: Colors.white),
+                                 label: Text(
+                                   'Chat Rider',
+                                   style: GoogleFonts.inter(fontWeight: FontWeight.w700, fontSize: 12, color: Colors.white),
+                                 ),
+                                 style: ElevatedButton.styleFrom(
+                                   backgroundColor: const Color(0xFF0284C7),
+                                   foregroundColor: Colors.white,
+                                   elevation: 0,
+                                   padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+                                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                                 ),
+                               ),
+                             ),
+                           ],
+                         ],
+                       ),
                        if (order.status == 'Pending') ...[
                          const SizedBox(height: 10),
                          SizedBox(
                            width: double.infinity,
                            child: OutlinedButton(
-                             onPressed: () => _updateStatus(order.id, 'Cancelled'),
+                             onPressed: () => _confirmCancelOrder(order),
                              style: OutlinedButton.styleFrom(
                                foregroundColor: Colors.redAccent,
                                side: BorderSide(color: Colors.red.shade200),
                                padding: const EdgeInsets.symmetric(vertical: 11),
                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                              ),
-                             child: Text('Cancel Order', style: GoogleFonts.inter(fontWeight: FontWeight.bold, fontSize: 12.5)),
+                             child: Text(loc.translate('cancel_order'), style: GoogleFonts.inter(fontWeight: FontWeight.bold, fontSize: 12.5)),
                            ),
                          ),
                        ],
@@ -570,31 +693,13 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
       imgUrl = '${AppConfig.baseUrl}$imgUrl';
     }
 
-    if (imgUrl.startsWith('http')) {
-      return ClipRRect(
-        borderRadius: BorderRadius.circular(14),
-        child: Image.network(
-          imgUrl,
-          width: 54,
-          height: 54,
-          fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => _buildFallbackPlantIcon(item),
-        ),
-      );
-    } else if (imgUrl.startsWith('assets/')) {
-      return ClipRRect(
-        borderRadius: BorderRadius.circular(14),
-        child: Image.asset(
-          imgUrl,
-          width: 54,
-          height: 54,
-          fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => _buildFallbackPlantIcon(item),
-        ),
-      );
-    }
-
-    return _buildFallbackPlantIcon(item);
+    return ProductImage(
+      imageUrl: imgUrl,
+      width: 54,
+      height: 54,
+      fit: BoxFit.cover,
+      borderRadius: BorderRadius.circular(14),
+    );
   }
 
   Widget _buildFallbackPlantIcon(OrderItem item) {
@@ -622,6 +727,7 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
   }
 
   Widget _buildProgressTracker(String currentStatus) {
+    final loc = context.watch<LocalizationProvider>();
     final stages = ['Pending', 'Accepted', 'Preparing', 'Shipped', 'Delivered'];
     final currentIndex = stages.indexOf(currentStatus);
 
@@ -638,9 +744,9 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text('Delivery Progress', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, fontSize: 13.5, color: context.textPrimary)),
+              Text(loc.translate('delivery_progress'), style: GoogleFonts.outfit(fontWeight: FontWeight.bold, fontSize: 13.5, color: context.textPrimary)),
               Text(
-                currentStatus,
+                loc.translate(currentStatus.toLowerCase()),
                 style: GoogleFonts.inter(fontWeight: FontWeight.w700, fontSize: 12, color: const Color(0xFF10B981)),
               ),
             ],
@@ -688,8 +794,8 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text('Placed', style: GoogleFonts.inter(fontSize: 10.5, fontWeight: FontWeight.w600, color: context.textSecondary)),
-              Text('Delivered', style: GoogleFonts.inter(fontSize: 10.5, fontWeight: FontWeight.w600, color: context.textSecondary)),
+              Text(loc.translate('placed'), style: GoogleFonts.inter(fontSize: 10.5, fontWeight: FontWeight.w600, color: context.textSecondary)),
+              Text(loc.translate('delivered'), style: GoogleFonts.inter(fontSize: 10.5, fontWeight: FontWeight.w600, color: context.textSecondary)),
             ],
           ),
         ],
@@ -698,6 +804,7 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
   }
 
   void _showStatusPicker(OrderModel order) {
+    final loc = context.read<LocalizationProvider>();
     final statuses = ['Pending', 'Accepted', 'Preparing', 'Shipped', 'Delivered'];
     
     showModalBottomSheet(
@@ -708,7 +815,7 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text('Update Order Status', style: GoogleFonts.outfit(fontSize: 18, fontWeight: FontWeight.bold)),
+            Text(loc.translate('update_status'), style: GoogleFonts.outfit(fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 16),
             ...statuses.map((s) => ListTile(
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -716,7 +823,7 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
                 _getStatusIcon(s),
                 color: s == order.status ? const Color(0xFF10B981) : AppColors.grey,
               ),
-              title: Text(s, style: GoogleFonts.inter(
+              title: Text(loc.translate(s.toLowerCase()), style: GoogleFonts.inter(
                 fontWeight: s == order.status ? FontWeight.bold : FontWeight.normal,
                 color: s == order.status ? const Color(0xFF10B981) : context.textPrimary,
               )),
@@ -743,20 +850,22 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
   }
 
   void _confirmCancelOrder(OrderModel order) {
-    final orderAge = DateTime.now().difference(order.createdAt);
-    if (orderAge.inHours >= 1) {
+    final loc = context.read<LocalizationProvider>();
+    if (order.status != 'Pending') {
+      ScaffoldMessenger.of(context).clearSnackBars();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Cancellation window has expired. Orders can only be cancelled within 1 hour of placing.',
+          duration: const Duration(seconds: 2),
+          content: Text('${loc.translate('order')} ${order.id} ${loc.translate(order.status.toLowerCase())}',
               style: GoogleFonts.inter(fontWeight: FontWeight.w600)),
           backgroundColor: Colors.redAccent,
           behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         ),
       );
       return;
     }
 
-    final remainingMins = math.max(0, 60 - orderAge.inMinutes);
     final shortId = order.id.length > 8 ? order.id.substring(0, 8) : order.id;
 
     showDialog(
@@ -776,7 +885,7 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
             ),
             const SizedBox(width: 10),
             Text(
-              'Cancel Order?',
+              loc.translate('cancel_order_dialog_title'),
               style: GoogleFonts.outfit(fontWeight: FontWeight.bold, color: context.textPrimary, fontSize: 18),
             ),
           ],
@@ -786,20 +895,20 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'You are within the 1-hour cancellation window (' + remainingMins.toString() + ' mins remaining).',
+              '${loc.translate('cancel_order_dialog_title')} (#$shortId)',
               style: GoogleFonts.inter(color: context.textPrimary, fontSize: 13.5, fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: 8),
             Text(
-              'Are you sure you want to cancel Order #' + shortId + '?',
-              style: GoogleFonts.inter(color: context.textSecondary, fontSize: 13),
+              loc.translate('cancel_order_fee_note'),
+              style: GoogleFonts.inter(color: Colors.redAccent, fontSize: 12.5),
             ),
           ],
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: Text('Keep Order', style: GoogleFonts.inter(color: context.textSecondary, fontWeight: FontWeight.w600)),
+            child: Text(loc.translate('keep_order'), style: GoogleFonts.inter(color: context.textSecondary, fontWeight: FontWeight.w600)),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
@@ -812,7 +921,7 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
               Navigator.pop(ctx);
               _updateStatus(order.id, 'Cancelled');
             },
-            child: const Text('Confirm Cancel'),
+            child: Text(loc.translate('confirm_cancel'), style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
           ),
         ],
       ),
@@ -827,8 +936,10 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
         await auth.addCancellationPenalty(200.0);
       }
       if (mounted) {
+        ScaffoldMessenger.of(context).clearSnackBars();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
+            duration: const Duration(seconds: 2),
             content: Text('Order status updated to $status', style: GoogleFonts.inter(fontWeight: FontWeight.w600)),
             backgroundColor: const Color(0xFF10B981),
             behavior: SnackBarBehavior.floating,
@@ -837,6 +948,19 @@ class _OrdersScreenState extends State<OrdersScreen> with SingleTickerProviderSt
         );
       }
       _loadData();
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).clearSnackBars();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            duration: const Duration(seconds: 2),
+            content: Text('Could not update order status. Please try again.', style: GoogleFonts.inter(fontWeight: FontWeight.w600)),
+            backgroundColor: Colors.redAccent,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+        );
+      }
     }
   }
 }

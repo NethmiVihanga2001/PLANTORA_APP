@@ -148,6 +148,8 @@ class _PaymentScreenState extends State<PaymentScreen> {
     final itemsSubtotal = cart.totalPrice;
     final discountAmt = cart.discountAmount;
     final rewardTitle = cart.activeRewardTitle ?? (cart.discountPercentage > 0 ? '${cart.discountPercentage.toInt()}% OFF Loyalty Reward' : null);
+    final customerAvatar = auth.user?.avatarUrl;
+    final customerName = auth.user?.name ?? 'Customer';
     final totalOrderAmount = cart.finalSubtotal + effectiveDeliveryFee + penalty;
 
     final result = await orderService.placeOrder(
@@ -159,6 +161,8 @@ class _PaymentScreenState extends State<PaymentScreen> {
       deliveryFee: effectiveDeliveryFee,
       shippingAddress: widget.deliveryAddress.isEmpty ? 'Colombo, Sri Lanka' : widget.deliveryAddress,
       phone: '+94 77 123 4567',
+      customerName: customerName,
+      customerAvatar: customerAvatar,
     );
 
     setState(() => _isLoading = false);
@@ -169,7 +173,8 @@ class _PaymentScreenState extends State<PaymentScreen> {
       final createdOrder = OrderModel(
         id: orderId,
         customerId: auth.user?.id ?? '',
-        customerName: auth.user?.name ?? 'Customer',
+        customerName: customerName,
+        customerAvatar: customerAvatar,
         items: orderItems,
         totalAmount: totalOrderAmount,
         subtotalAmount: itemsSubtotal,
@@ -207,7 +212,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
 
   void _showSuccessDialog(BuildContext ctx, OrderModel order) {
     final auth = context.read<AuthProvider>();
-    final userName = auth.user?.name ?? 'Valued Customer';
+    final userName = auth.user?.displayName ?? 'Valued Customer';
 
     showDialog(
       context: ctx,
@@ -328,14 +333,44 @@ class _PaymentScreenState extends State<PaymentScreen> {
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
+                              Text('Transaction Date', style: GoogleFonts.inter(fontSize: 12, color: context.textSecondary)),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  alignment: Alignment.centerRight,
+                                  child: Builder(
+                                    builder: (context) {
+                                      final createdLocal = order.createdAt.toLocal();
+                                      final hour12 = createdLocal.hour == 0 ? 12 : (createdLocal.hour > 12 ? createdLocal.hour - 12 : createdLocal.hour);
+                                      final ampm = createdLocal.hour >= 12 ? "PM" : "AM";
+                                      final min = createdLocal.minute.toString().padLeft(2, '0');
+                                      return Text(
+                                        '${createdLocal.day.toString().padLeft(2, '0')}/${createdLocal.month.toString().padLeft(2, '0')}/${createdLocal.year} $hour12:$min $ampm',
+                                        textAlign: TextAlign.end,
+                                        style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.bold, color: context.textPrimary),
+                                      );
+                                    },
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
                               Text('Payment Method', style: GoogleFonts.inter(fontSize: 12, color: context.textSecondary)),
                               const SizedBox(width: 8),
                               Expanded(
-                                child: Text(
-                                  'Online Bank Card',
-                                  textAlign: TextAlign.end,
-                                  style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.bold, color: context.textPrimary),
-                                  overflow: TextOverflow.ellipsis,
+                                child: FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  alignment: Alignment.centerRight,
+                                  child: Text(
+                                    'Online Bank Card',
+                                    textAlign: TextAlign.end,
+                                    style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.bold, color: context.textPrimary),
+                                  ),
                                 ),
                               ),
                             ],
@@ -346,9 +381,15 @@ class _PaymentScreenState extends State<PaymentScreen> {
                             children: [
                               Text('Total Amount Paid', style: GoogleFonts.inter(fontSize: 12, color: context.textSecondary)),
                               const SizedBox(width: 8),
-                              FittedBox(
-                                fit: BoxFit.scaleDown,
-                                child: Text('Rs. ${order.totalAmount.toStringAsFixed(2)}', style: GoogleFonts.outfit(fontSize: 15, fontWeight: FontWeight.w800, color: const Color(0xFF10B981))),
+                              Expanded(
+                                child: FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  alignment: Alignment.centerRight,
+                                  child: Text(
+                                    'Rs. ${order.totalAmount.toStringAsFixed(2)}',
+                                    style: GoogleFonts.outfit(fontSize: 15, fontWeight: FontWeight.w800, color: const Color(0xFF10B981)),
+                                  ),
+                                ),
                               ),
                             ],
                           ),

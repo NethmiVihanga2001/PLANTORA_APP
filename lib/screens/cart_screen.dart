@@ -10,6 +10,7 @@ import '../providers/cart_provider.dart';
 import '../providers/localization_provider.dart';
 import '../services/order_service.dart';
 import '../config/app_config.dart';
+import '../widgets/product_image.dart';
 import 'package:latlong2/latlong.dart';
 import 'map_picker_screen.dart';
 import 'payment_screen.dart';
@@ -78,6 +79,7 @@ class _CartScreenState extends State<CartScreen> {
   void _onProceedToCheckout(CartProvider cart) {
     if (cart.items.isEmpty) return;
 
+    final loc = context.read<LocalizationProvider>();
     final address = _addressController.text.trim();
     if (address.isEmpty || _customerLocation == null) {
       HapticFeedback.heavyImpact();
@@ -99,7 +101,7 @@ class _CartScreenState extends State<CartScreen> {
               const SizedBox(width: 12),
               Expanded(
                 child: Text(
-                  'Location Required',
+                  loc.translate('location_required'),
                   style: GoogleFonts.outfit(
                     fontWeight: FontWeight.bold,
                     fontSize: 18,
@@ -110,7 +112,7 @@ class _CartScreenState extends State<CartScreen> {
             ],
           ),
           content: Text(
-            'Selecting a delivery location is required to place your order. Please pin your location on the map before proceeding to checkout.',
+            loc.translate('tap_to_select_location'),
             style: GoogleFonts.inter(
               fontSize: 14,
               color: context.textSecondary,
@@ -122,7 +124,7 @@ class _CartScreenState extends State<CartScreen> {
             TextButton(
               onPressed: () => Navigator.pop(ctx),
               child: Text(
-                'Cancel',
+                loc.translate('cancel'),
                 style: GoogleFonts.inter(
                   color: context.textSecondary,
                   fontWeight: FontWeight.w600,
@@ -143,7 +145,7 @@ class _CartScreenState extends State<CartScreen> {
               ),
               icon: const Icon(Icons.map_rounded, size: 18),
               label: Text(
-                'Pin Location',
+                loc.translate('pin_location'),
                 style: GoogleFonts.inter(fontWeight: FontWeight.bold),
               ),
             ),
@@ -202,7 +204,7 @@ class _CartScreenState extends State<CartScreen> {
                         Text(loc.translate('empty_cart'),
                             style: GoogleFonts.outfit(fontSize: 22, fontWeight: FontWeight.bold, color: context.textPrimary)),
                         const SizedBox(height: 8),
-                        Text('Discover plants and essentials in the marketplace',
+                        Text(loc.translate('explore_plants'),
                             style: GoogleFonts.inter(color: context.textSecondary)),
                         const SizedBox(height: 24),
                         ElevatedButton(
@@ -213,7 +215,7 @@ class _CartScreenState extends State<CartScreen> {
                             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                           ),
-                          child: Text('Browse Marketplace', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
+                          child: Text(loc.translate('browse_marketplace'), style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
                         ),
                       ],
                     ),
@@ -412,20 +414,14 @@ class _CartScreenState extends State<CartScreen> {
               padding: const EdgeInsets.all(12),
               child: Row(
                 children: [
-                  ClipRRect(
+                  ProductImage(
+                    imageUrl: item.imageUrl,
+                    emoji: '🌿',
+                    width: 70,
+                    height: 70,
+                    fit: BoxFit.cover,
+                    emojiSize: 28,
                     borderRadius: BorderRadius.circular(14),
-                    child: Container(
-                      width: 70,
-                      height: 70,
-                      color: context.textPrimary.withValues(alpha: 0.05),
-                      child: item.imageUrl.isNotEmpty
-                          ? Image.network(
-                              '${AppConfig.baseUrl}${item.imageUrl}',
-                              fit: BoxFit.cover,
-                              errorBuilder: (_, __, ___) => const Center(child: Text('🌿', style: TextStyle(fontSize: 28))),
-                            )
-                          : const Center(child: Text('🌿', style: TextStyle(fontSize: 28))),
-                    ),
                   ),
                   const SizedBox(width: 14),
                   Expanded(
@@ -504,6 +500,7 @@ class _CartScreenState extends State<CartScreen> {
   }
 
   Widget _buildCheckoutSummary(CartProvider cart) {
+    final loc = context.watch<LocalizationProvider>();
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -529,7 +526,7 @@ class _CartScreenState extends State<CartScreen> {
               Row(
                 children: [
                   Text(
-                    'Delivery Details',
+                    loc.translate('delivery_details'),
                     style: GoogleFonts.outfit(fontSize: 16, fontWeight: FontWeight.bold, color: context.textPrimary),
                   ),
                   if (_customerLocation != null) ...[
@@ -544,7 +541,7 @@ class _CartScreenState extends State<CartScreen> {
                         ),
                       ),
                       child: Text(
-                        'PINNED ✓',
+                        loc.translate('pinned'),
                         style: GoogleFonts.inter(
                           fontSize: 9.5,
                           fontWeight: FontWeight.w800,
@@ -567,7 +564,7 @@ class _CartScreenState extends State<CartScreen> {
                       const Icon(Icons.map_rounded, size: 14, color: Color(0xFF10B981)),
                       const SizedBox(width: 4),
                       Text(
-                        _customerLocation == null ? 'Pin Map' : 'Change',
+                        _customerLocation == null ? loc.translate('pin_location') : loc.translate('edit_profile'),
                         style: GoogleFonts.inter(
                           fontSize: 12,
                           fontWeight: FontWeight.w700,
@@ -612,7 +609,7 @@ class _CartScreenState extends State<CartScreen> {
                         Text(
                           _addressController.text.isNotEmpty
                               ? _addressController.text
-                              : 'Tap to select delivery location on map',
+                              : loc.translate('tap_to_select_location'),
                           style: GoogleFonts.inter(
                             fontSize: 13,
                             fontWeight: _addressController.text.isNotEmpty ? FontWeight.w600 : FontWeight.w500,
@@ -625,7 +622,7 @@ class _CartScreenState extends State<CartScreen> {
                           Padding(
                             padding: const EdgeInsets.only(top: 3),
                             child: Text(
-                              '📍 ${_distanceKm.toStringAsFixed(1)} km from nursery',
+                              '📍 ${_distanceKm.toStringAsFixed(1)} km',
                               style: GoogleFonts.inter(fontSize: 11, color: const Color(0xFF10B981), fontWeight: FontWeight.w600),
                             ),
                           ),
@@ -690,8 +687,8 @@ class _CartScreenState extends State<CartScreen> {
                         ),
                         Text(
                           cart.discountPercentage > 0
-                              ? '${cart.discountPercentage.toInt()}% Loyalty Discount Applied (-Rs. ${cart.discountAmount.toStringAsFixed(0)})'
-                              : 'Free Delivery Perk Applied',
+                              ? '${cart.discountPercentage.toInt()}% ${loc.translate('loyalty_offers')} (-Rs. ${cart.discountAmount.toStringAsFixed(0)})'
+                              : 'Free Delivery',
                           style: GoogleFonts.inter(
                             fontSize: 11,
                             color: const Color(0xFF10B981),
@@ -721,7 +718,7 @@ class _CartScreenState extends State<CartScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('Subtotal', style: GoogleFonts.inter(color: context.textSecondary)),
+                Text(loc.translate('subtotal'), style: GoogleFonts.inter(color: context.textSecondary)),
                 Text('Rs. ${cart.totalPrice.toStringAsFixed(0)}', style: GoogleFonts.inter(fontWeight: FontWeight.w600, color: context.textPrimary)),
               ],
             ),
@@ -731,7 +728,7 @@ class _CartScreenState extends State<CartScreen> {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text(
-                    'Loyalty Reward (${cart.discountPercentage.toInt()}% OFF)',
+                    '${loc.translate('loyalty_rewards')} (${cart.discountPercentage.toInt()}% OFF)',
                     style: GoogleFonts.inter(color: const Color(0xFF10B981), fontWeight: FontWeight.w600),
                   ),
                   Text(
@@ -749,7 +746,7 @@ class _CartScreenState extends State<CartScreen> {
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Delivery Fee (Rs. 20/km)', style: GoogleFonts.inter(color: context.textSecondary)),
+                    Text('${loc.translate('delivery_fee')} (Rs. 20/km)', style: GoogleFonts.inter(color: context.textSecondary)),
                     if (_customerLocation != null && _distanceKm > 0)
                       Text(
                         'Distance: ${_distanceKm.toStringAsFixed(1)} km',
@@ -767,7 +764,7 @@ class _CartScreenState extends State<CartScreen> {
                         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                         decoration: BoxDecoration(color: const Color(0xFF10B981), borderRadius: BorderRadius.circular(4)),
                         child: Text(
-                          cart.hasFreeDeliveryReward ? 'FREE (REWARD)' : 'FREE',
+                          'FREE',
                           style: GoogleFonts.inter(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
                         ),
                       ),
@@ -785,7 +782,7 @@ class _CartScreenState extends State<CartScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text('Total Amount',
+              Text(loc.translate('total'),
                   style: GoogleFonts.outfit(fontSize: 15, color: context.textSecondary, fontWeight: FontWeight.w600)),
               Text('Rs. ${(cart.finalSubtotal + _deliveryFee).toStringAsFixed(0)}',
                   style: GoogleFonts.outfit(
@@ -807,7 +804,7 @@ class _CartScreenState extends State<CartScreen> {
                 elevation: 3,
               ),
               icon: const Icon(Icons.payment_rounded, size: 20),
-              label: Text('Proceed to Checkout', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, fontSize: 15)),
+              label: Text(loc.translate('proceed_to_checkout'), style: GoogleFonts.outfit(fontWeight: FontWeight.bold, fontSize: 15)),
             ),
           ),
         ],

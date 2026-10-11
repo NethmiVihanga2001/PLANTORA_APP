@@ -104,6 +104,7 @@ class OrderModel {
   final DateTime createdAt;
   final String shippingAddress;
   final String phone;
+  final String? customerAvatar;
   final String? driverId;
   final String? driverName;
   final String? driverPhone;
@@ -115,6 +116,7 @@ class OrderModel {
     required this.id,
     required this.customerId,
     required this.customerName,
+    this.customerAvatar,
     required this.items,
     required this.totalAmount,
     this.subtotalAmount,
@@ -138,6 +140,7 @@ class OrderModel {
       id: json['id'] ?? '',
       customerId: json['customerId'] ?? '',
       customerName: json['customerName'] ?? '',
+      customerAvatar: json['customerAvatar'],
       items: (json['items'] as List? ?? [])
           .map((i) => OrderItem.fromJson(i))
           .toList(),
@@ -147,11 +150,7 @@ class OrderModel {
       discountTitle: json['discountTitle'],
       deliveryFee: json['deliveryFee'] != null ? (json['deliveryFee'] as num).toDouble() : null,
       status: json['status'] ?? 'Pending',
-      createdAt: json['createdAt'] != null 
-        ? (json['createdAt']['_seconds'] != null 
-            ? DateTime.fromMillisecondsSinceEpoch(json['createdAt']['_seconds'] * 1000)
-            : DateTime.parse(json['createdAt']))
-        : DateTime.now(),
+      createdAt: _parseDateTime(json['createdAt']),
       shippingAddress: json['shippingAddress'] ?? '',
       phone: json['phone'] ?? '',
       driverId: json['driverId'],
@@ -163,14 +162,36 @@ class OrderModel {
     );
   }
 
+  static DateTime _parseDateTime(dynamic val) {
+    if (val == null) return DateTime.now();
+    if (val is DateTime) return val.toLocal();
+    if (val is Map) {
+      final sec = val['_seconds'] ?? val['seconds'];
+      if (sec is num) {
+        return DateTime.fromMillisecondsSinceEpoch(sec.toInt() * 1000, isUtc: true).toLocal();
+      }
+    }
+    if (val is String) {
+      try {
+        return DateTime.parse(val).toLocal();
+      } catch (_) {}
+    }
+    if (val is num) {
+      return DateTime.fromMillisecondsSinceEpoch(val.toInt(), isUtc: true).toLocal();
+    }
+    return DateTime.now();
+  }
+
   OrderStatus get orderStatus {
-    switch (status) {
-      case 'Accepted': return OrderStatus.accepted;
-      case 'Preparing': return OrderStatus.preparing;
-      case 'Shipped': return OrderStatus.shipped;
-      case 'Out for Delivery': return OrderStatus.outForDelivery;
-      case 'Delivered': return OrderStatus.delivered;
-      case 'Cancelled': return OrderStatus.cancelled;
+    final s = status.trim().toLowerCase();
+    switch (s) {
+      case 'accepted': return OrderStatus.accepted;
+      case 'preparing': return OrderStatus.preparing;
+      case 'shipped': return OrderStatus.shipped;
+      case 'out for delivery':
+      case 'out_for_delivery': return OrderStatus.outForDelivery;
+      case 'delivered': return OrderStatus.delivered;
+      case 'cancelled': return OrderStatus.cancelled;
       default: return OrderStatus.pending;
     }
   }

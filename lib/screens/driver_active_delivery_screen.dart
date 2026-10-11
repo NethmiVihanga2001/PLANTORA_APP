@@ -8,11 +8,19 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:geolocator/geolocator.dart';
 import '../../../theme/app_theme.dart';
+import '../../../models/order_model.dart';
+import '../../../services/socket_service.dart';
+import '../../../services/order_service.dart';
+import '../../../services/delivery_service.dart';
 import '../../../providers/theme_provider.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'driver_chat_screen.dart';
 
 class DriverActiveDeliveryScreen extends StatefulWidget {
-  const DriverActiveDeliveryScreen({super.key});
+  final OrderModel? order;
+  const DriverActiveDeliveryScreen({super.key, this.order});
 
   @override
   State<DriverActiveDeliveryScreen> createState() => _DriverActiveDeliveryScreenState();
@@ -22,90 +30,192 @@ class _DriverActiveDeliveryScreenState extends State<DriverActiveDeliveryScreen>
   final MapController _mapController = MapController();
   
   // Real coordinates in Colombo, Sri Lanka
-  final List<LatLng> _routePoints = const [
-    LatLng(6.9110, 79.8660), // Start (Nelum Pokuna area)
-    LatLng(6.9140, 79.8640),
-    LatLng(6.9160, 79.8610),
-    LatLng(6.9190, 79.8580),
-    LatLng(6.9230, 79.8520),
-    LatLng(6.9271, 79.8450), // End (Galle Face)
-  ];
-
+  final LatLng _shopPoint = const LatLng(6.8720, 79.8860); // Plantora Shop (Maharagama)
+  final LatLng _destinationPoint = const LatLng(6.9271, 79.8612); // Delivery Address (Colombo)
+  
   late LatLng _currentLocation;
-  bool _isSimulating = false;
+  double _currentHeading = 0.0;
+  
+  // Real road route geometry fetched from OSRM
+  List<LatLng> _roadRoutePoints = [];
+  // Traveled breadcrumbs (actual path driven)
+  final List<LatLng> _traveledBreadcrumbs = [];
+  
+  // GPS Tracking
+  StreamSubscription<Position>? _gpsSubscription;
+  bool _isGpsLive = false;
+  String _gpsStatus = 'Searching GPS...';
+
+  // Road Route Drive (for indoor/testing)
+  bool _isDrivingRoute = false;
+  Timer? _driveTimer;
+  int _routeStepIndex = 0;
+
   bool _deliveryCompleted = false;
   bool _isCompletingDelivery = false;
-  
-  late AnimationController _animationController;
-  late Animation<double> _animation;
-  int _currentSegment = 0;
+
+  String get _orderId => widget.order?.id ?? 'ORD-2026-9481';
 
   @override
   void initState() {
     super.initState();
-    _currentLocation = _routePoints.first;
+    _currentLocation = _shopPoint;
+    _traveledBreadcrumbs.add(_currentLocation);
     
-    _animationController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 4), // Duration per segment
+    SocketService().joinOrderRoom(_orderId);
+
+    // 1. Fetch real street road geometry from OSRM
+    _fetchRealRoadRoute();
+
+    // 2. Start hardware GPS tracking stream
+    _initLiveGps();
+  }
+
+  Future<void> _fetchRealRoadRoute() async {
+    final points = await DeliveryService.fetchRoadRoute(_shopPoint, _destinationPoint);
+    if (mounted) {
+      setState(() {
+        _roadRoutePoints = points;
+      });
+      if (_roadRoutePoints.isNotEmpty) {
+        _mapController.fitCamera(CameraFit.bounds(
+          bounds: LatLngBounds.fromPoints([_currentLocation, _destinationPoint]),
+          padding: const EdgeInsets.fromLTRB(40, 80, 40, 260),
+        ));
+      }
+    }
+  }
+
+  Future<void> _initLiveGps() async {
+    try {
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        setState(() => _gpsStatus = 'GPS Service Disabled');
+        return;
+      }
+
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          setState(() => _gpsStatus = 'GPS Permission Denied');
+          return;
+        }
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        setState(() => _gpsStatus = 'GPS Denied Forever');
+        return;
+      }
+
+      // Initial position
+      final initialPos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+      );
+      _onDriverLocationUpdate(initialPos.latitude, initialPos.longitude, initialPos.heading);
+
+      // Start continuous stream
+      _gpsSubscription = Geolocator.getPositionStream(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          distanceFilter: 3, // meters
+        ),
+      ).listen((pos) {
+        _onDriverLocationUpdate(pos.latitude, pos.longitude, pos.heading);
+      });
+
+      setState(() {
+        _isGpsLive = true;
+        _gpsStatus = 'Live GPS Streaming';
+      });
+    } catch (e) {
+      debugPrint('Geolocator init error: $e');
+      setState(() => _gpsStatus = 'Manual / Test Mode');
+    }
+  }
+
+  void _onDriverLocationUpdate(double lat, double lng, double heading) {
+    if (!mounted) return;
+    final newPoint = LatLng(lat, lng);
+    
+    setState(() {
+      _currentLocation = newPoint;
+      _currentHeading = heading;
+      if (_traveledBreadcrumbs.isEmpty || 
+          const Distance().as(LengthUnit.Meter, _traveledBreadcrumbs.last, newPoint) >= 3) {
+        _traveledBreadcrumbs.add(newPoint);
+      }
+    });
+
+    _mapController.move(_currentLocation, 16.0);
+
+    // Calculate real distance to destination
+    final distanceMeters = const Distance().as(LengthUnit.Meter, _currentLocation, _destinationPoint);
+
+    // Emit live location over Socket.IO to Customer and Seller maps!
+    SocketService().updateLocation(
+      orderId: _orderId,
+      lat: lat,
+      lng: lng,
+      heading: heading,
+      stage: 'delivering_to_customer',
+      distanceToCustomer: distanceMeters.toDouble(),
     );
   }
 
-  void _startSimulation() {
-    if (_isSimulating || _currentSegment >= _routePoints.length - 1) return;
-    
-    setState(() => _isSimulating = true);
-    _animateNextSegment();
-  }
-
-  void _animateNextSegment() {
-    if (_currentSegment >= _routePoints.length - 1) {
-      setState(() => _isSimulating = false);
+  // Interactive road drive along the real OSRM street route
+  void _toggleRoadDrive() {
+    if (_isDrivingRoute) {
+      _driveTimer?.cancel();
+      setState(() => _isDrivingRoute = false);
       return;
     }
 
-    final startPoint = _routePoints[_currentSegment];
-    final endPoint = _routePoints[_currentSegment + 1];
+    final route = _roadRoutePoints.isNotEmpty 
+        ? _roadRoutePoints 
+        : [_shopPoint, const LatLng(6.8900, 79.8750), const LatLng(6.9100, 79.8650), _destinationPoint];
 
-    _animation = Tween<double>(begin: 0, end: 1).animate(_animationController)
-      ..addListener(() {
-        setState(() {
-          final lat = lerpDouble(startPoint.latitude, endPoint.latitude, _animation.value)!;
-          final lng = lerpDouble(startPoint.longitude, endPoint.longitude, _animation.value)!;
-          _currentLocation = LatLng(lat, lng);
-          _mapController.move(_currentLocation, 15.5);
-        });
-      })
-      ..addStatusListener((status) {
-        if (status == AnimationStatus.completed) {
-          _currentSegment++;
-          _animationController.reset();
-          
-          if (_currentSegment < _routePoints.length - 1) {
-            _animateNextSegment(); // Move to next segment
-          } else {
-            // Reached destination
-            setState(() => _isSimulating = false);
-          }
-        }
-      });
+    setState(() => _isDrivingRoute = true);
 
-    _animationController.forward();
+    _driveTimer = Timer.periodic(const Duration(milliseconds: 700), (timer) {
+      if (_routeStepIndex >= route.length - 1) {
+        timer.cancel();
+        setState(() => _isDrivingRoute = false);
+        return;
+      }
+
+      _routeStepIndex++;
+      final point = route[_routeStepIndex];
+      
+      // Calculate heading towards next point
+      double heading = 0.0;
+      if (_routeStepIndex < route.length - 1) {
+        final next = route[_routeStepIndex + 1];
+        heading = (math.atan2(next.longitude - point.longitude, next.latitude - point.latitude) * 180 / math.pi);
+      }
+
+      _onDriverLocationUpdate(point.latitude, point.longitude, heading);
+    });
   }
 
   @override
   void dispose() {
-    _animationController.dispose();
+    _gpsSubscription?.cancel();
+    _driveTimer?.cancel();
+    SocketService().leaveOrderRoom(_orderId);
     super.dispose();
   }
 
-  // Helper to check progress (0.0 to 1.0) for UI stats
+  double get _distanceToDestinationMeters {
+    return const Distance().as(LengthUnit.Meter, _currentLocation, _destinationPoint);
+  }
+
   double get _overallProgress {
-    if (_routePoints.isEmpty) return 0;
-    if (_currentSegment >= _routePoints.length - 1) return 1.0;
-    
-    final segmentProgress = _animationController.isAnimating ? _animationController.value : 0.0;
-    return (_currentSegment + segmentProgress) / (_routePoints.length - 1);
+    final total = const Distance().as(LengthUnit.Meter, _shopPoint, _destinationPoint);
+    if (total <= 0) return 1.0;
+    final remaining = _distanceToDestinationMeters;
+    final p = 1.0 - (remaining / total);
+    return p.clamp(0.0, 1.0);
   }
 
   @override
@@ -116,16 +226,66 @@ class _DriverActiveDeliveryScreenState extends State<DriverActiveDeliveryScreen>
       backgroundColor: isDark ? const Color(0xFF0F172A) : const Color(0xFFE2E8F0),
       body: Stack(
         children: [
-          // Flutter Map with OpenStreetMap
+          // Flutter Map with Real Road Polyline & Driver Location
           _buildMap(isDark),
           
-          // Header with Back button
+          // Header with Back button and Live GPS Pill
           Positioned(
             top: MediaQuery.of(context).padding.top + 10,
             left: 12,
-            child: IconButton(
-              onPressed: () => Navigator.pop(context),
-              icon: Icon(Icons.arrow_back_rounded, color: context.textPrimary, size: 26),
+            right: 12,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Container(
+                  decoration: BoxDecoration(
+                    color: (isDark ? const Color(0xFF1E293B) : Colors.white).withValues(alpha: 0.9),
+                    shape: BoxShape.circle,
+                    boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.15), blurRadius: 8)],
+                  ),
+                  child: IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    icon: Icon(Icons.arrow_back_rounded, color: context.textPrimary, size: 24),
+                  ),
+                ),
+
+                // Live GPS Status Indicator
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: (isDark ? const Color(0xFF1E293B) : Colors.white).withValues(alpha: 0.92),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color: _isGpsLive ? const Color(0xFF10B981) : Colors.orangeAccent, 
+                      width: 1.5,
+                    ),
+                    boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.1), blurRadius: 10)],
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          color: _isGpsLive ? const Color(0xFF10B981) : Colors.orangeAccent,
+                          shape: BoxShape.circle,
+                        ),
+                      ).animate(onPlay: (c) => c.repeat(reverse: true))
+                       .scale(begin: const Offset(0.8, 0.8), end: const Offset(1.3, 1.3), duration: 800.ms),
+                      const SizedBox(width: 8),
+                      Text(
+                        _isGpsLive ? 'Live GPS Active' : _gpsStatus,
+                        style: GoogleFonts.inter(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: _isGpsLive ? const Color(0xFF10B981) : Colors.orangeAccent,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
           ),
 
@@ -143,15 +303,20 @@ class _DriverActiveDeliveryScreenState extends State<DriverActiveDeliveryScreen>
 
   Widget _buildMap(bool isDark) {
     const urlTemplate = 'https://{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}';
+    final fullRoad = _roadRoutePoints.isNotEmpty 
+        ? _roadRoutePoints 
+        : [_shopPoint, _destinationPoint];
 
     return FlutterMap(
       mapController: _mapController,
       options: MapOptions(
-        initialCenter: _routePoints.first,
-        initialZoom: 15.5,
-        interactionOptions: const InteractionOptions(
-          flags: InteractiveFlag.all,
-        ),
+        initialCenter: _shopPoint,
+        initialZoom: 15.0,
+        interactionOptions: const InteractionOptions(flags: InteractiveFlag.all),
+        onTap: (tapPosition, point) {
+          // Allow driver to tap to jump/test location anywhere on the street
+          _onDriverLocationUpdate(point.latitude, point.longitude, _currentHeading);
+        },
       ),
       children: [
         TileLayer(
@@ -159,56 +324,86 @@ class _DriverActiveDeliveryScreenState extends State<DriverActiveDeliveryScreen>
           subdomains: const ['mt0', 'mt1', 'mt2', 'mt3'],
           userAgentPackageName: 'com.plantora.app',
         ),
+
+        // 1. Full Planned Road Route (Subtle Street Geometry)
         PolylineLayer(
           polylines: [
             Polyline(
-              points: _routePoints,
-              strokeWidth: 6.0,
-              color: AppColors.primaryGreen.withOpacity(0.3),
+              points: fullRoad,
+              strokeWidth: 5.5,
+              color: const Color(0xFF10B981).withValues(alpha: 0.35),
             ),
-            // The drawn path behind the driver
-            Polyline(
-              points: [
-                ..._routePoints.sublist(0, math.min(_currentSegment + 1, _routePoints.length)),
-                _currentLocation,
-              ],
-              strokeWidth: 6.0,
-              color: AppColors.primaryGreen,
-              strokeCap: StrokeCap.round,
-              strokeJoin: StrokeJoin.round,
-            ),
+            // 2. Real Traveled Breadcrumbs Path (Solid Emerald Green)
+            if (_traveledBreadcrumbs.length >= 2)
+              Polyline(
+                points: _traveledBreadcrumbs,
+                strokeWidth: 6.0,
+                color: const Color(0xFF10B981),
+                strokeCap: StrokeCap.round,
+                strokeJoin: StrokeJoin.round,
+              ),
           ],
         ),
+
         MarkerLayer(
           markers: [
-            // Destination Marker
+            // Shop Pickup Marker
             Marker(
-              point: _routePoints.last,
+              point: _shopPoint,
+              width: 44,
+              height: 44,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: const Color(0xFF065F46),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white, width: 2.5),
+                  boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.2), blurRadius: 8)],
+                ),
+                child: const Icon(Icons.storefront_rounded, color: Colors.white, size: 22),
+              ),
+            ),
+
+            // Destination Marker (Customer House)
+            Marker(
+              point: _destinationPoint,
               width: 50,
               height: 50,
               child: Container(
                 decoration: BoxDecoration(
-                  color: Colors.red,
+                  color: Colors.redAccent,
                   shape: BoxShape.circle,
                   border: Border.all(color: Colors.white, width: 3),
-                  boxShadow: [BoxShadow(color: Colors.red.withOpacity(0.5), blurRadius: 10)],
+                  boxShadow: [BoxShadow(color: Colors.redAccent.withValues(alpha: 0.5), blurRadius: 10)],
                 ),
-                child: const Icon(Icons.location_on, color: Colors.white, size: 30),
-              ).animate(onPlay: (c) => c.repeat(reverse: true)).scale(begin: const Offset(0.9, 0.9), duration: 1.seconds),
+                child: const Icon(Icons.location_on_rounded, color: Colors.white, size: 28),
+              ).animate(onPlay: (c) => c.repeat(reverse: true))
+               .scale(begin: const Offset(0.9, 0.9), duration: 1.seconds),
             ),
-            // Driver Marker
+
+            // Driver Motorcycle Live Marker (Rotating with heading)
             Marker(
               point: _currentLocation,
               width: 60,
               height: 60,
-              child: Container(
-                decoration: BoxDecoration(
-                  color: AppColors.primaryGreen,
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white, width: 4),
-                  boxShadow: [BoxShadow(color: AppColors.primaryGreen.withOpacity(0.5), blurRadius: 15, spreadRadius: 2)],
+              child: Transform.rotate(
+                angle: _currentHeading * (math.pi / 180),
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: const Color(0xFF10B981), width: 3.5),
+                    boxShadow: [
+                      BoxShadow(
+                        color: const Color(0xFF10B981).withValues(alpha: 0.5), 
+                        blurRadius: 15, 
+                        spreadRadius: 2,
+                      ),
+                    ],
+                  ),
+                  child: const Center(
+                    child: Text('🛵', style: TextStyle(fontSize: 26)),
+                  ),
                 ),
-                child: const Icon(Icons.local_shipping_rounded, color: Colors.white, size: 30),
               ),
             ),
           ],
@@ -218,19 +413,24 @@ class _DriverActiveDeliveryScreenState extends State<DriverActiveDeliveryScreen>
   }
 
   Widget _buildBottomPanel(bool isDark) {
+    final distKm = (_distanceToDestinationMeters / 1000).toStringAsFixed(1);
+    final etaMins = (_distanceToDestinationMeters / 300).ceil();
+    final isArrived = _distanceToDestinationMeters <= 60;
+    final orderAmount = widget.order?.totalAmount ?? 2450.0;
+
     return ClipRRect(
       borderRadius: const BorderRadius.vertical(top: Radius.circular(32)),
       child: BackdropFilter(
         filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
         child: Container(
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.fromLTRB(24, 16, 24, 28),
           decoration: BoxDecoration(
-            color: isDark ? const Color(0xFF1E293B).withOpacity(0.9) : Colors.white.withOpacity(0.9),
+            color: isDark ? const Color(0xFF1E293B).withValues(alpha: 0.94) : Colors.white.withValues(alpha: 0.94),
             borderRadius: const BorderRadius.vertical(top: Radius.circular(32)),
-            border: Border(top: BorderSide(color: Colors.white.withOpacity(isDark ? 0.05 : 0.5), width: 1)),
+            border: Border(top: BorderSide(color: Colors.white.withValues(alpha: isDark ? 0.05 : 0.5), width: 1)),
             boxShadow: [
-              BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 30, offset: const Offset(0, -10))
-            ]
+              BoxShadow(color: Colors.black.withValues(alpha: 0.12), blurRadius: 30, offset: const Offset(0, -10))
+            ],
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -238,9 +438,9 @@ class _DriverActiveDeliveryScreenState extends State<DriverActiveDeliveryScreen>
               Container(
                 width: 40,
                 height: 4,
-                margin: const EdgeInsets.only(bottom: 24),
+                margin: const EdgeInsets.only(bottom: 18),
                 decoration: BoxDecoration(
-                  color: context.textSecondary.withOpacity(0.3),
+                  color: context.textSecondary.withValues(alpha: 0.3),
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
@@ -248,218 +448,199 @@ class _DriverActiveDeliveryScreenState extends State<DriverActiveDeliveryScreen>
               Row(
                 children: [
                   Container(
-                    padding: const EdgeInsets.all(16),
+                    padding: const EdgeInsets.all(14),
                     decoration: BoxDecoration(
-                      color: AppColors.primaryGreen,
-                      borderRadius: BorderRadius.circular(20),
-                      boxShadow: [BoxShadow(color: AppColors.primaryGreen.withOpacity(0.4), blurRadius: 15, offset: const Offset(0, 5))]
+                      color: const Color(0xFF10B981),
+                      borderRadius: BorderRadius.circular(18),
+                      boxShadow: [BoxShadow(color: const Color(0xFF10B981).withValues(alpha: 0.4), blurRadius: 15, offset: const Offset(0, 5))]
                     ),
                     child: Icon(
-                      _overallProgress >= 1.0 ? Icons.check_rounded : Icons.turn_right_rounded, 
+                      isArrived ? Icons.check_circle_rounded : Icons.navigation_rounded, 
                       color: Colors.white, 
-                      size: 32
+                      size: 28,
                     ),
                   ),
-                  const SizedBox(width: 20),
+                  const SizedBox(width: 16),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          _overallProgress >= 1.0 ? 'Arrived at Destination' : 'Proceed to Galle Face',
-                          style: GoogleFonts.inter(fontSize: 20, fontWeight: FontWeight.w900, color: context.textPrimary, letterSpacing: -0.5),
+                          isArrived ? 'Arrived at Destination' : 'Delivering via Street Route',
+                          style: GoogleFonts.outfit(
+                            fontSize: 18, 
+                            fontWeight: FontWeight.bold, 
+                            color: context.textPrimary,
+                          ),
                         ),
-                        const SizedBox(height: 4),
+                        const SizedBox(height: 3),
                         Text(
-                          _overallProgress >= 1.0 ? 'Delivery Completed' : 'Driving on real streets',
-                          style: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w600, color: context.textSecondary),
+                          widget.order?.shippingAddress ?? 'Colombo, Sri Lanka',
+                          style: GoogleFonts.inter(fontSize: 13, color: context.textSecondary),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ],
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 32),
+              const SizedBox(height: 20),
               
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
-                  _buildNavStat(isDark, '${(15 * (1 - _overallProgress)).ceil()} min', 'Time'),
-                  Container(width: 1, height: 40, color: context.textSecondary.withOpacity(0.2)),
-                  _buildNavStat(isDark, '${(3.2 * (1 - _overallProgress)).toStringAsFixed(1)} km', 'Distance'),
-                  Container(width: 1, height: 40, color: context.textSecondary.withOpacity(0.2)),
-                  _buildNavStat(isDark, '12:45 PM', 'ETA'),
+                  _buildNavStat(isDark, '$etaMins min', 'ETA'),
+                  Container(width: 1, height: 36, color: context.textSecondary.withValues(alpha: 0.2)),
+                  _buildNavStat(isDark, '$distKm km', 'Distance'),
+                  Container(width: 1, height: 36, color: context.textSecondary.withValues(alpha: 0.2)),
+                  _buildNavStat(isDark, '${(_overallProgress * 100).round()}%', 'Progress'),
                 ],
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 18),
               
-              // Order Amount and Chat Icons
+              // Order Summary strip
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                 decoration: BoxDecoration(
-                  color: isDark ? Colors.white.withOpacity(0.05) : Colors.black.withOpacity(0.03),
-                  borderRadius: BorderRadius.circular(16),
+                  color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.black.withValues(alpha: 0.03),
+                  borderRadius: BorderRadius.circular(14),
                 ),
                 child: Row(
                   children: [
                     Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('Order Amount', style: GoogleFonts.inter(fontSize: 12, color: context.textSecondary)),
-                        const SizedBox(height: 2),
-                        Text('Rs. 2,450', style: GoogleFonts.inter(fontSize: 18, fontWeight: FontWeight.bold, color: context.textPrimary)),
+                        Text('Order Amount', style: GoogleFonts.inter(fontSize: 11, color: context.textSecondary)),
+                        Text('Rs. ${orderAmount.toStringAsFixed(2)}', 
+                          style: GoogleFonts.outfit(fontSize: 16, fontWeight: FontWeight.bold, color: const Color(0xFF10B981))),
                       ],
                     ),
                     const Spacer(),
-                    Container(
-                      decoration: BoxDecoration(color: AppColors.primaryGreen.withOpacity(0.1), shape: BoxShape.circle),
-                      child: IconButton(
-                        icon: const Icon(Icons.person_rounded, size: 20, color: AppColors.primaryGreen),
-                        onPressed: () {},
-                        tooltip: 'Chat with Customer',
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Container(
-                      decoration: BoxDecoration(color: AppColors.primaryGreen.withOpacity(0.1), shape: BoxShape.circle),
-                      child: IconButton(
-                        icon: const Icon(Icons.storefront_rounded, size: 20, color: AppColors.primaryGreen),
-                        onPressed: () {},
-                        tooltip: 'Chat with Seller',
-                      ),
-                    ),
+                    Text('Order ID: $_orderId', 
+                      style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600, color: context.textSecondary)),
                   ],
                 ),
               ),
-              const SizedBox(height: 24),
-              
-              // ── ARRIVED: End Ride Button ──────────────────────────
-              if (_overallProgress >= 1.0 && !_deliveryCompleted)
-                Column(
-                  children: [
-                    const SizedBox(height: 8),
-                    // Pulsing arrived banner
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF10B981).withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: const Color(0xFF10B981).withOpacity(0.3)),
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          const Icon(Icons.location_on_rounded, color: Color(0xFF10B981), size: 16),
-                          const SizedBox(width: 8),
-                          Text(
-                            'You have arrived at the destination',
-                            style: GoogleFonts.inter(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              color: const Color(0xFF10B981),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ).animate(onPlay: (c) => c.repeat(reverse: true)).fadeIn(duration: 800.ms, begin: 0.7),
-                    const SizedBox(height: 16),
+              const SizedBox(height: 14),
 
-                    // Complete Delivery button
-                    GestureDetector(
-                      onTap: _isCompletingDelivery ? null : _confirmCompleteDelivery,
-                      child: Container(
-                        width: double.infinity,
-                        height: 60,
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(18),
-                          gradient: const LinearGradient(
-                            colors: [Color(0xFF065F46), Color(0xFF10B981)],
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
+              // Live Customer Chat Action Row
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        final ord = widget.order ?? OrderModel(
+                          id: _orderId,
+                          customerId: 'customer',
+                          customerName: 'Customer',
+                          items: [],
+                          totalAmount: orderAmount,
+                          status: 'Out for Delivery',
+                          createdAt: DateTime.now(),
+                          shippingAddress: widget.order?.shippingAddress ?? 'Colombo, Sri Lanka',
+                          phone: widget.order?.phone ?? '',
+                          driverId: 'driver',
+                          driverName: 'Driver',
+                        );
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => DriverChatScreen(order: ord),
                           ),
-                          boxShadow: [
-                            BoxShadow(
-                              color: const Color(0xFF10B981).withOpacity(0.5),
-                              blurRadius: 20,
-                              offset: const Offset(0, 8),
-                            )
-                          ],
-                        ),
-                        child: _isCompletingDelivery
-                            ? const Center(
-                                child: SizedBox(
-                                  width: 24,
-                                  height: 24,
-                                  child: CircularProgressIndicator(
-                                    color: Colors.white,
-                                    strokeWidth: 2.5,
-                                  ),
-                                ),
-                              )
-                            : Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  const Icon(Icons.check_circle_rounded,
-                                      color: Colors.white, size: 24),
-                                  const SizedBox(width: 12),
-                                  Text(
-                                    'Complete Delivery',
-                                    style: GoogleFonts.outfit(
-                                      color: Colors.white,
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.w800,
-                                      letterSpacing: 0.3,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                      ).animate(onPlay: (c) => c.repeat(reverse: true))
-                        .scaleXY(begin: 1.0, end: 1.02, duration: 900.ms, curve: Curves.easeInOut),
-                    ),
-                  ],
-                ),
-
-              // ── IN PROGRESS: Simulate Drive Button ──────────────────
-              if (_overallProgress < 1.0)
-                GestureDetector(
-                  onTap: _startSimulation,
-                  child: Container(
-                    width: double.infinity,
-                    height: 56,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(16),
-                      gradient: LinearGradient(colors: _isSimulating
-                          ? [Colors.grey, Colors.grey.shade600]
-                          : [AppColors.primaryGreen, const Color(0xFF34D399)]),
-                      boxShadow: [
-                        BoxShadow(
-                          color: _isSimulating
-                              ? Colors.transparent
-                              : AppColors.primaryGreen.withOpacity(0.4),
-                          blurRadius: 15,
-                          offset: const Offset(0, 8),
-                        )
-                      ],
-                    ),
-                    child: Center(
-                      child: Text(
-                        _isSimulating ? 'Simulating Drive...' : 'Simulate Drive',
-                        style: GoogleFonts.inter(
-                            color: Colors.white,
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold),
+                        );
+                      },
+                      icon: const Icon(Icons.chat_bubble_outline_rounded, size: 18),
+                      label: Text('Chat Customer', style: GoogleFonts.inter(fontWeight: FontWeight.w700, fontSize: 13.5)),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFF10B981),
+                        side: const BorderSide(color: Color(0xFF10B981), width: 1.5),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                       ),
                     ),
                   ),
-                ),
+                  if (widget.order?.phone != null && widget.order!.phone.isNotEmpty) ...[
+                    const SizedBox(width: 10),
+                    IconButton(
+                      onPressed: () async {
+                        final url = Uri.parse('tel:${widget.order!.phone}');
+                        if (await canLaunchUrl(url)) await launchUrl(url);
+                      },
+                      icon: const Icon(Icons.phone_rounded, color: Colors.white, size: 20),
+                      style: IconButton.styleFrom(
+                        backgroundColor: const Color(0xFF0284C7),
+                        minimumSize: const Size(48, 48),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+              const SizedBox(height: 12),
+
+              // Action Buttons: Drive Route Test & Complete Delivery
+              Row(
+                children: [
+                  // Test drive road button
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _toggleRoadDrive,
+                      icon: Icon(_isDrivingRoute ? Icons.pause_rounded : Icons.play_arrow_rounded, size: 20),
+                      label: Text(_isDrivingRoute ? 'Pause Drive' : 'Drive Road'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFF10B981),
+                        side: const BorderSide(color: Color(0xFF10B981), width: 1.5),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+
+                  // Complete delivery button
+                  Expanded(
+                    flex: 2,
+                    child: ElevatedButton.icon(
+                      onPressed: (_isCompletingDelivery || _deliveryCompleted) ? null : _confirmCompleteDelivery,
+                      icon: const Icon(Icons.check_circle_rounded, color: Colors.white, size: 22),
+                      label: Text(
+                        _deliveryCompleted ? 'Delivered!' : (_isCompletingDelivery ? 'Completing...' : 'Complete Delivery'),
+                        style: GoogleFonts.outfit(fontWeight: FontWeight.bold, fontSize: 16),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF10B981),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        elevation: 4,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ],
           ),
         ),
       ),
-    ).animate().slideY(begin: 1, duration: 600.ms, curve: Curves.easeOutBack);
+    );
   }
 
+  Widget _buildNavStat(bool isDark, String value, String label) {
+    return Column(
+      children: [
+        Text(
+          value,
+          style: GoogleFonts.outfit(fontSize: 18, fontWeight: FontWeight.w800, color: context.textPrimary),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          label,
+          style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w500, color: context.textSecondary),
+        ),
+      ],
+    );
+  }
 
   void _confirmCompleteDelivery() {
     HapticFeedback.mediumImpact();
@@ -488,13 +669,12 @@ class _DriverActiveDeliveryScreenState extends State<DriverActiveDeliveryScreen>
               Container(
                 padding: const EdgeInsets.all(20),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF10B981).withOpacity(0.1),
+                  color: const Color(0xFF10B981).withValues(alpha: 0.1),
                   shape: BoxShape.circle,
                 ),
-                child: const Icon(Icons.check_circle_rounded,
-                    color: Color(0xFF10B981), size: 52),
+                child: const Icon(Icons.check_circle_rounded, color: Color(0xFF10B981), size: 48),
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 18),
               Text(
                 'Complete Delivery?',
                 style: GoogleFonts.outfit(
@@ -505,15 +685,11 @@ class _DriverActiveDeliveryScreenState extends State<DriverActiveDeliveryScreen>
               ),
               const SizedBox(height: 8),
               Text(
-                'Confirm that you have handed over the order to the customer. This will mark the delivery as done.',
+                'Confirm that you have handed over the plants to the customer. This updates order status to Delivered.',
                 textAlign: TextAlign.center,
-                style: GoogleFonts.inter(
-                  fontSize: 14,
-                  color: Colors.grey.shade500,
-                  height: 1.5,
-                ),
+                style: GoogleFonts.inter(fontSize: 14, color: Colors.grey.shade500, height: 1.4),
               ),
-              const SizedBox(height: 28),
+              const SizedBox(height: 24),
               Row(
                 children: [
                   Expanded(
@@ -523,12 +699,9 @@ class _DriverActiveDeliveryScreenState extends State<DriverActiveDeliveryScreen>
                         foregroundColor: Colors.grey.shade500,
                         side: BorderSide(color: Colors.grey.shade300),
                         padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(14)),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                       ),
-                      child: Text('Cancel',
-                          style: GoogleFonts.inter(
-                              fontWeight: FontWeight.w600, fontSize: 15)),
+                      child: Text('Cancel', style: GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 15)),
                     ),
                   ),
                   const SizedBox(width: 14),
@@ -543,13 +716,9 @@ class _DriverActiveDeliveryScreenState extends State<DriverActiveDeliveryScreen>
                         backgroundColor: const Color(0xFF10B981),
                         foregroundColor: Colors.white,
                         padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(14)),
-                        elevation: 0,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                       ),
-                      child: Text('Yes, Delivered!',
-                          style: GoogleFonts.outfit(
-                              fontWeight: FontWeight.w700, fontSize: 15)),
+                      child: Text('Yes, Delivered!', style: GoogleFonts.outfit(fontWeight: FontWeight.w700, fontSize: 15)),
                     ),
                   ),
                 ],
@@ -564,17 +733,18 @@ class _DriverActiveDeliveryScreenState extends State<DriverActiveDeliveryScreen>
   Future<void> _finishDelivery() async {
     HapticFeedback.heavyImpact();
     setState(() => _isCompletingDelivery = true);
-    // Brief loading to feel reliable
-    await Future.delayed(const Duration(milliseconds: 1200));
+
+    // Call real-time socket and order service completion
+    SocketService().completeDelivery(_orderId);
+    await OrderService().updateOrderStatus(_orderId, 'Delivered');
+
+    await Future.delayed(const Duration(milliseconds: 600));
     if (!mounted) return;
     setState(() {
       _deliveryCompleted = true;
       _isCompletingDelivery = false;
     });
     HapticFeedback.heavyImpact();
-    // Show success then pop
-    await Future.delayed(const Duration(milliseconds: 400));
-    if (!mounted) return;
     _showSuccessDialog();
   }
 
@@ -588,22 +758,19 @@ class _DriverActiveDeliveryScreenState extends State<DriverActiveDeliveryScreen>
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
           backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
           child: Padding(
-            padding: const EdgeInsets.all(32),
+            padding: const EdgeInsets.all(28),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Container(
-                  padding: const EdgeInsets.all(22),
+                  padding: const EdgeInsets.all(20),
                   decoration: const BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [Color(0xFF065F46), Color(0xFF10B981)],
-                    ),
+                    gradient: LinearGradient(colors: [Color(0xFF065F46), Color(0xFF10B981)]),
                     shape: BoxShape.circle,
                   ),
-                  child: const Icon(Icons.check_rounded,
-                      color: Colors.white, size: 48),
+                  child: const Icon(Icons.check_rounded, color: Colors.white, size: 44),
                 ).animate().scale(duration: 400.ms, curve: Curves.elasticOut),
-                const SizedBox(height: 20),
+                const SizedBox(height: 18),
                 Text(
                   'Delivery Complete! 🎉',
                   style: GoogleFonts.outfit(
@@ -614,55 +781,32 @@ class _DriverActiveDeliveryScreenState extends State<DriverActiveDeliveryScreen>
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Rs. 350 has been added to your earnings for today.',
+                  'Order status has been updated to Delivered. Earnings credited to your wallet.',
                   textAlign: TextAlign.center,
-                  style: GoogleFonts.inter(
-                    fontSize: 14,
-                    color: Colors.grey.shade500,
-                    height: 1.5,
-                  ),
+                  style: GoogleFonts.inter(fontSize: 13, color: Colors.grey.shade500),
                 ),
-                const SizedBox(height: 28),
-                ElevatedButton(
-                  onPressed: () {
-                    Navigator.pop(ctx);
-                    Navigator.pop(context);
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF10B981),
-                    foregroundColor: Colors.white,
-                    minimumSize: const Size(double.infinity, 52),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14)),
-                    elevation: 0,
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      Navigator.pop(context);
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF10B981),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    ),
+                    child: Text('Done', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, fontSize: 16)),
                   ),
-                  child: Text('Back to Dashboard',
-                      style: GoogleFonts.outfit(
-                          fontWeight: FontWeight.w700, fontSize: 15)),
                 ),
               ],
             ),
           ),
         );
       },
-    );
-  }
-
-  Widget _buildNavStat(bool isDark, String value, String label) {
-    return Column(
-      children: [
-        Text(value,
-            style: GoogleFonts.inter(
-                fontSize: 20,
-                fontWeight: FontWeight.w900,
-                color: context.textPrimary)),
-        const SizedBox(height: 4),
-        Text(label,
-            style: GoogleFonts.inter(
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                color: context.textSecondary)),
-      ],
     );
   }
 }

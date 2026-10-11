@@ -511,7 +511,11 @@ class _SellerPaymentsScreenState extends State<SellerPaymentsScreen> with Single
       tagLabel = '- Cashout';
     }
 
-    final formattedDate = '${tx.date.day}/${tx.date.month}/${tx.date.year} at ${tx.date.hour.toString().padLeft(2, '0')}:${tx.date.minute.toString().padLeft(2, '0')}';
+    final localDate = tx.date.toLocal();
+    final hour12 = localDate.hour == 0 ? 12 : (localDate.hour > 12 ? localDate.hour - 12 : localDate.hour);
+    final ampm = localDate.hour >= 12 ? 'PM' : 'AM';
+    final min = localDate.minute.toString().padLeft(2, '0');
+    final formattedDate = '${localDate.day}/${localDate.month}/${localDate.year} at $hour12:$min $ampm';
 
     return Container(
       padding: const EdgeInsets.all(14),

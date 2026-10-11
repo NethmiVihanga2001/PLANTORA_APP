@@ -10,6 +10,7 @@ import 'providers/theme_provider.dart';
 import 'providers/notification_provider.dart';
 import 'providers/favorites_provider.dart';
 import 'services/finance_service.dart';
+import 'widgets/notification_overlay.dart';
 
 import 'screens/language_screen.dart';
 import 'screens/auth/login_screen.dart';
@@ -57,12 +58,41 @@ void main() async {
   runApp(const PlantOraApp());
 }
 
-class RootAuthHandler extends StatelessWidget {
+class RootAuthHandler extends StatefulWidget {
   const RootAuthHandler({super.key});
+
+  @override
+  State<RootAuthHandler> createState() => _RootAuthHandlerState();
+}
+
+class _RootAuthHandlerState extends State<RootAuthHandler> {
+  String? _lastInitializedUserId;
 
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthProvider>();
+    final notifProvider = context.read<NotificationProvider>();
+
+    // Init notifications whenever a new user logs in
+    if (auth.isLoggedIn && auth.user != null &&
+        auth.user!.id != _lastInitializedUserId) {
+      final userId = auth.user!.id;
+      _lastInitializedUserId = userId;
+      // Set up popup callback to global AppOverlay
+      notifProvider.onInAppNotification = (notif) {
+        AppOverlay.show(notif);
+      };
+      // Fetch real notifications + subscribe to socket (deferred to after build)
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        notifProvider.init();
+      });
+    } else if (!auth.isLoggedIn && _lastInitializedUserId != null) {
+      _lastInitializedUserId = null;
+      // Defer reset so it doesn't fire notifyListeners during build
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        notifProvider.reset();
+      });
+    }
 
     // 1. Show smooth dark splash while loading persistent user credentials from storage
     if (!auth.isInitialized) {
@@ -96,19 +126,22 @@ class RootAuthHandler extends StatelessWidget {
       );
     }
 
+    Widget screen;
     // 2. Direct automatic entry to Home Page for logged-in users
     if (auth.isLoggedIn && auth.user != null) {
       if (auth.user!.role == 'Driver') {
-        return const DriverMainScreen();
+        screen = const DriverMainScreen();
       } else if (auth.user!.role == 'Seller') {
-        return const SellerDashboardScreen();
+        screen = const SellerDashboardScreen();
       } else {
-        return const HomeScreen();
+        screen = const HomeScreen();
       }
+    } else {
+      // 3. Display WelcomeScreen ONLY when user is logged out
+      screen = const WelcomeScreen();
     }
 
-    // 3. Display WelcomeScreen ONLY when user is logged out
-    return const WelcomeScreen();
+    return screen;
   }
 }
 
@@ -143,7 +176,12 @@ class PlantOraApp extends StatelessWidget {
               },
             ),
             debugShowCheckedModeBanner: false,
-
+            builder: (context, child) {
+              return NotificationOverlay(
+                key: AppOverlay.overlayKey,
+                child: child ?? const SizedBox.shrink(),
+              );
+            },
             theme: AppTheme.lightTheme,
             darkTheme: AppTheme.darkTheme,
             themeMode: effectiveTheme,

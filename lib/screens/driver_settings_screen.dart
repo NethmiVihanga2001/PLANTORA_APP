@@ -16,6 +16,7 @@ import 'settings/change_password_screen.dart';
 import 'settings/info_screen.dart';
 import 'welcome_screen.dart';
 import 'package:flutter/services.dart';
+import '../providers/localization_provider.dart';
 
 class DriverSettingsScreen extends StatefulWidget {
   const DriverSettingsScreen({super.key});
@@ -30,13 +31,14 @@ class _DriverSettingsScreenState extends State<DriverSettingsScreen> {
     final isDark = context.watch<ThemeProvider>().isDarkMode;
     final user = context.watch<AuthProvider>().user;
     final notificationsEnabled = context.watch<NotificationProvider>().notificationsEnabled;
+    final loc = context.watch<LocalizationProvider>();
 
     return Scaffold(
       backgroundColor: context.scaffoldBg,
       drawer: const DriverDrawer(currentIndex: 14),
-      appBar: const PremiumAppBar(
-        title: 'Driver Settings',
-        subtitle: 'Manage vehicle & preferences',
+      appBar: PremiumAppBar(
+        title: loc.translate('driver_settings'),
+        subtitle: loc.translate('app_preferences'),
         showMenuButton: true,
       ),
       body: SingleChildScrollView(
@@ -122,13 +124,13 @@ class _DriverSettingsScreenState extends State<DriverSettingsScreen> {
               ]),
 
               // Preferences Section
-              _buildSectionHeader(context, 'App Preferences'),
+              _buildSectionHeader(context, loc.translate('app_preferences')),
               _buildSectionCard(context, [
                 _buildSwitchTile(
                   context: context,
                   icon: Icons.notifications_active_rounded,
                   iconColor: const Color(0xFFEC4899),
-                  title: 'Push Notifications & Alerts',
+                  title: loc.translate('push_notifications'),
                   value: notificationsEnabled,
                   onChanged: (val) => context.read<NotificationProvider>().toggleNotifications(val),
                   showDivider: true,
@@ -137,7 +139,7 @@ class _DriverSettingsScreenState extends State<DriverSettingsScreen> {
                   context: context,
                   icon: Icons.dark_mode_rounded,
                   iconColor: const Color(0xFF3B82F6),
-                  title: 'Dark Mode',
+                  title: loc.translate('dark_mode'),
                   value: isDark,
                   onChanged: (val) => context.read<ThemeProvider>().toggleTheme(),
                   showDivider: true,
@@ -146,15 +148,17 @@ class _DriverSettingsScreenState extends State<DriverSettingsScreen> {
                   context: context,
                   icon: Icons.language_rounded,
                   iconColor: const Color(0xFF10B981),
-                  title: 'Language',
-                  subtitle: 'English',
+                  title: loc.translate('language'),
+                  subtitle: loc.locale.languageCode == 'si'
+                      ? 'සිංහල'
+                      : (loc.locale.languageCode == 'ta' ? 'தமிழ்' : 'English'),
                   onTap: () => Navigator.pushNamed(context, '/language'),
                   showDivider: false,
                 ),
               ]),
 
               // Support & Legal Section
-              _buildSectionHeader(context, 'Support & Legal'),
+              _buildSectionHeader(context, loc.translate('support_legal')),
               _buildSectionCard(context, [
                 _buildSettingsTile(
                   context: context,

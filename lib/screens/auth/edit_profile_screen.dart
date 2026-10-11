@@ -2,6 +2,7 @@ import 'dart:typed_data';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import '../../widgets/premium_app_bar.dart';
@@ -37,7 +38,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     super.initState();
     final user = context.read<AuthProvider>().user;
     if (user != null) {
-      _nameController.text = user.name;
+      _nameController.text = user.displayName;
       _phoneController.text = user.phone ?? '';
       _bioController.text = user.bio ?? '';
       _locationController.text = user.location ?? '';
@@ -57,26 +58,176 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     super.dispose();
   }
 
-  Future<void> _pickImage() async {
-    final pickedFile = await _picker.pickImage(source: ImageSource.gallery, imageQuality: 70);
-    if (pickedFile != null) {
-      final bytes = await pickedFile.readAsBytes();
-      setState(() {
-        _imageBytes = bytes;
-        _imageFileName = pickedFile.name;
-      });
+  Future<void> _pickImageWithSource(ImageSource source) async {
+    try {
+      final pickedFile = await _picker.pickImage(source: source, imageQuality: 70);
+      if (pickedFile != null) {
+        final bytes = await pickedFile.readAsBytes();
+        setState(() {
+          _imageBytes = bytes;
+          _imageFileName = pickedFile.name;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error picking profile avatar: $e');
     }
   }
 
-  Future<void> _pickShopImage() async {
-    final pickedFile = await _picker.pickImage(source: ImageSource.gallery, imageQuality: 70);
-    if (pickedFile != null) {
-      final bytes = await pickedFile.readAsBytes();
-      setState(() {
-        _shopImageBytes = bytes;
-        _shopImageFileName = pickedFile.name;
-      });
+  Future<void> _pickShopImageWithSource(ImageSource source) async {
+    try {
+      final pickedFile = await _picker.pickImage(source: source, imageQuality: 70);
+      if (pickedFile != null) {
+        final bytes = await pickedFile.readAsBytes();
+        setState(() {
+          _shopImageBytes = bytes;
+          _shopImageFileName = pickedFile.name;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error picking shop cover: $e');
     }
+  }
+
+  void _showAvatarOptionsSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: context.cardBg,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) {
+        final user = context.read<AuthProvider>().user;
+        final hasImage = _imageBytes != null || (user?.avatarUrl != null && user!.avatarUrl!.trim().isNotEmpty);
+
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: context.textSecondary.withOpacity(0.3),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  user?.isSeller == true ? 'Shop Profile Logo / Photo' : 'Change Profile Photo',
+                  style: GoogleFonts.outfit(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: context.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                ListTile(
+                  leading: const Icon(Icons.photo_camera_rounded, color: Color(0xFF10B981)),
+                  title: Text('Take Photo (Camera)', style: GoogleFonts.inter(fontWeight: FontWeight.w600, color: context.textPrimary)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _pickImageWithSource(ImageSource.camera);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.photo_library_rounded, color: Color(0xFF10B981)),
+                  title: Text('Choose from Gallery', style: GoogleFonts.inter(fontWeight: FontWeight.w600, color: context.textPrimary)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _pickImageWithSource(ImageSource.gallery);
+                  },
+                ),
+                if (hasImage)
+                  ListTile(
+                    leading: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
+                    title: Text('Remove Photo', style: GoogleFonts.inter(fontWeight: FontWeight.w600, color: Colors.redAccent)),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      setState(() {
+                        _imageBytes = null;
+                        _imageFileName = null;
+                      });
+                    },
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _showShopCoverOptionsSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: context.cardBg,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) {
+        final user = context.read<AuthProvider>().user;
+        final hasImage = _shopImageBytes != null || (user?.shopImage != null && user!.shopImage!.trim().isNotEmpty);
+
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: context.textSecondary.withOpacity(0.3),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'Shop Cover Banner Image',
+                  style: GoogleFonts.outfit(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: context.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                ListTile(
+                  leading: const Icon(Icons.photo_camera_rounded, color: Color(0xFF10B981)),
+                  title: Text('Take Photo (Camera)', style: GoogleFonts.inter(fontWeight: FontWeight.w600, color: context.textPrimary)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _pickShopImageWithSource(ImageSource.camera);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.photo_library_rounded, color: Color(0xFF10B981)),
+                  title: Text('Choose from Gallery', style: GoogleFonts.inter(fontWeight: FontWeight.w600, color: context.textPrimary)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _pickShopImageWithSource(ImageSource.gallery);
+                  },
+                ),
+                if (hasImage)
+                  ListTile(
+                    leading: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
+                    title: Text('Remove Cover Image', style: GoogleFonts.inter(fontWeight: FontWeight.w600, color: Colors.redAccent)),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      setState(() {
+                        _shopImageBytes = null;
+                        _shopImageFileName = null;
+                      });
+                    },
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   Future<void> _saveProfile() async {
@@ -165,99 +316,133 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
             children: [
               // Avatar Section
               Center(
-                child: Stack(
+                child: Column(
                   children: [
-                    Container(
-                      width: 120,
-                      height: 120,
-                      decoration: BoxDecoration(
-                        color: context.cardBg,
-                        shape: BoxShape.circle,
-                        border: Border.all(color: const Color(0xFF10B981), width: 3),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.12),
-                            blurRadius: 14,
-                            offset: const Offset(0, 6),
-                          )
-                        ],
-                      ),
-                      child: ClipOval(
-                        child: _imageBytes != null
-                            ? Image.memory(_imageBytes!, fit: BoxFit.cover)
-                            : (user.avatarUrl != null && user.avatarUrl!.isNotEmpty
-                                ? (user.avatarUrl!.startsWith('data:image')
-                                    ? Image.memory(
-                                        base64Decode(user.avatarUrl!.split(',').last),
-                                        fit: BoxFit.cover,
-                                      )
-                                    : CachedNetworkImage(
-                                        imageUrl: getAvatarUrl(user.avatarUrl)!,
-                                        fit: BoxFit.cover,
-                                        placeholder: (context, url) => const Center(child: CircularProgressIndicator()),
-                                        errorWidget: (context, url, error) => Icon(Icons.person, size: 60, color: context.textSecondary),
-                                      ))
-                                : Center(
-                                    child: Text(
-                                      user.name.isNotEmpty ? user.name.substring(0, 1).toUpperCase() : 'U',
-                                      style: const TextStyle(fontSize: 42, fontWeight: FontWeight.bold, color: Color(0xFF10B981)),
-                                    ),
-                                  )),
-                      ),
+                    Text(
+                      user.isSeller ? 'Shop Profile Image / Logo' : 'Profile Picture',
+                      style: GoogleFonts.outfit(fontSize: 14, fontWeight: FontWeight.w700, color: context.textPrimary),
                     ),
-                    Positioned(
-                      bottom: 0,
-                      right: 0,
-                      child: Material(
-                        color: const Color(0xFF10B981),
-                        shape: const CircleBorder(),
-                        elevation: 4,
-                        child: InkWell(
-                          onTap: _pickImage,
-                          customBorder: const CircleBorder(),
-                          child: const Padding(
-                            padding: EdgeInsets.all(10),
-                            child: Icon(Icons.camera_alt_rounded, color: Colors.white, size: 20),
+                    const SizedBox(height: 12),
+                    GestureDetector(
+                      onTap: _showAvatarOptionsSheet,
+                      child: Stack(
+                        children: [
+                          Container(
+                            width: 120,
+                            height: 120,
+                            decoration: BoxDecoration(
+                              color: context.cardBg,
+                              shape: BoxShape.circle,
+                              border: Border.all(color: const Color(0xFF10B981), width: 3),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withOpacity(0.12),
+                                  blurRadius: 14,
+                                  offset: const Offset(0, 6),
+                                )
+                              ],
+                            ),
+                            child: ClipOval(
+                              child: _imageBytes != null
+                                  ? Image.memory(_imageBytes!, fit: BoxFit.cover)
+                                  : (user.avatarUrl != null && user.avatarUrl!.isNotEmpty
+                                      ? (user.avatarUrl!.startsWith('data:image')
+                                          ? Image.memory(
+                                              base64Decode(user.avatarUrl!.split(',').last),
+                                              fit: BoxFit.cover,
+                                            )
+                                          : CachedNetworkImage(
+                                              imageUrl: getAvatarUrl(user.avatarUrl)!,
+                                              fit: BoxFit.cover,
+                                              placeholder: (context, url) => const Center(child: CircularProgressIndicator()),
+                                              errorWidget: (context, url, error) => Icon(Icons.person, size: 60, color: context.textSecondary),
+                                            ))
+                                      : Center(
+                                          child: Text(
+                                            user.name.isNotEmpty ? user.name.substring(0, 1).toUpperCase() : 'U',
+                                            style: const TextStyle(fontSize: 42, fontWeight: FontWeight.bold, color: Color(0xFF10B981)),
+                                          ),
+                                        )),
+                            ),
                           ),
-                        ),
-                      ),
+                          Positioned(
+                            bottom: 0,
+                            right: 0,
+                            child: Material(
+                              color: const Color(0xFF10B981),
+                              shape: const CircleBorder(),
+                              elevation: 4,
+                              child: InkWell(
+                                onTap: _showAvatarOptionsSheet,
+                                customBorder: const CircleBorder(),
+                                child: const Padding(
+                                  padding: EdgeInsets.all(10),
+                                  child: Icon(Icons.camera_alt_rounded, color: Colors.white, size: 20),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ).animate().scale(duration: 350.ms, curve: Curves.easeOutBack),
                     ),
                   ],
-                ).animate().scale(duration: 350.ms, curve: Curves.easeOutBack),
+                ),
               ),
 
               if (user.isSeller) ...[
                 const SizedBox(height: 32),
-                Text('Shop Cover Image', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: context.textPrimary)),
+                Text('Shop Cover Banner Image', style: GoogleFonts.outfit(fontSize: 14, fontWeight: FontWeight.w700, color: context.textPrimary)),
                 const SizedBox(height: 10),
                 GestureDetector(
-                  onTap: _pickShopImage,
+                  onTap: _showShopCoverOptionsSheet,
                   child: Container(
                     width: double.infinity,
-                    height: 160,
+                    height: 165,
                     decoration: BoxDecoration(
                       color: context.inputFill,
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: const Color(0xFF10B981).withOpacity(0.3), width: 1.5),
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(color: const Color(0xFF10B981).withOpacity(0.4), width: 1.5),
                       image: _shopImageBytes != null
                           ? DecorationImage(image: MemoryImage(_shopImageBytes!), fit: BoxFit.cover)
-                          : (user.shopImage != null
+                          : (user.shopImage != null && user.shopImage!.isNotEmpty
                               ? DecorationImage(
                                   image: CachedNetworkImageProvider(getAvatarUrl(user.shopImage)!),
                                   fit: BoxFit.cover,
                                 )
                               : null),
                     ),
-                    child: _shopImageBytes == null && user.shopImage == null
+                    child: _shopImageBytes == null && (user.shopImage == null || user.shopImage!.isEmpty)
                         ? Column(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              const Icon(Icons.add_photo_alternate_rounded, size: 36, color: Color(0xFF10B981)),
+                              const Icon(Icons.add_photo_alternate_rounded, size: 38, color: Color(0xFF10B981)),
                               const SizedBox(height: 8),
-                              Text('Click to upload shop cover banner', style: TextStyle(fontSize: 13, color: context.textSecondary, fontWeight: FontWeight.w500)),
+                              Text('Tap to select shop cover banner (Camera / Gallery)', style: TextStyle(fontSize: 13, color: context.textSecondary, fontWeight: FontWeight.w500)),
                             ],
                           )
-                        : null,
+                        : Stack(
+                            children: [
+                              Positioned(
+                                bottom: 10,
+                                right: 10,
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                  decoration: BoxDecoration(
+                                    color: Colors.black.withOpacity(0.6),
+                                    borderRadius: BorderRadius.circular(20),
+                                  ),
+                                  child: const Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(Icons.edit_rounded, color: Colors.white, size: 14),
+                                      SizedBox(width: 4),
+                                      Text('Change Cover', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
                   ),
                 ).animate().slideY(begin: 0.1, duration: 350.ms),
               ],

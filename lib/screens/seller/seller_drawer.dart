@@ -1,4 +1,6 @@
 import 'dart:ui';
+import 'dart:convert';
+import '../../../config/app_config.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -138,16 +140,33 @@ class _SellerDrawerState extends State<SellerDrawer>
   }
 
   Widget _buildHeader(user, LocalizationProvider loc) {
+    final String shopName = (user?.businessName != null && user!.businessName!.trim().isNotEmpty)
+        ? user.businessName!
+        : (user?.name ?? 'Seller Store');
+    final String ownerName = user?.name ?? 'Seller Owner';
+    final avatar = user?.avatarUrl ?? user?.shopImage;
+    final bool hasAvatar = avatar != null && avatar.trim().isNotEmpty && avatar != 'null';
+
+    String? avatarFullUrl;
+    if (hasAvatar) {
+      if (avatar.startsWith('http') || avatar.startsWith('data:image')) {
+        avatarFullUrl = avatar;
+      } else {
+        avatarFullUrl = '${AppConfig.baseUrl}$avatar';
+      }
+    }
+
     return Container(
       padding: const EdgeInsets.fromLTRB(20, 24, 20, 20),
       child: Row(
         children: [
-          // Avatar with glow
+          // Avatar with glow & image
           Container(
-            width: 54,
-            height: 54,
+            width: 56,
+            height: 56,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
+              border: Border.all(color: const Color(0xFF10B981), width: 2),
               gradient: const LinearGradient(
                 colors: [Color(0xFF10B981), Color(0xFF059669)],
               ),
@@ -159,15 +178,26 @@ class _SellerDrawerState extends State<SellerDrawer>
                 ),
               ],
             ),
-            child: Center(
-              child: Text(
-                user?.name.isNotEmpty == true ? user!.name[0].toUpperCase() : 'S',
-                style: TextStyle(
-                  color: context.textPrimary,
-                  fontSize: 22,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
+            child: ClipOval(
+              child: hasAvatar && avatarFullUrl != null
+                  ? (avatarFullUrl.startsWith('data:image')
+                      ? Image.memory(base64Decode(avatarFullUrl.split(',').last), fit: BoxFit.cover)
+                      : Image.network(
+                          avatarFullUrl,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => Center(
+                            child: Text(
+                              shopName.isNotEmpty ? shopName[0].toUpperCase() : 'S',
+                              style: TextStyle(color: context.textPrimary, fontSize: 22, fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        ))
+                  : Center(
+                      child: Text(
+                        shopName.isNotEmpty ? shopName[0].toUpperCase() : 'S',
+                        style: TextStyle(color: context.textPrimary, fontSize: 22, fontWeight: FontWeight.bold),
+                      ),
+                    ),
             ),
           ).animate().scale(duration: 500.ms, curve: Curves.easeOutBack),
           const SizedBox(width: 14),
@@ -176,10 +206,10 @@ class _SellerDrawerState extends State<SellerDrawer>
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  user?.name ?? 'Seller',
+                  shopName,
                   style: TextStyle(
                     color: context.textPrimary,
-                    fontSize: 16,
+                    fontSize: 16.5,
                     fontWeight: FontWeight.bold,
                     letterSpacing: 0.3,
                   ),
@@ -197,13 +227,14 @@ class _SellerDrawerState extends State<SellerDrawer>
                         shape: BoxShape.circle,
                       ),
                     ),
+                    const SizedBox(width: 6),
                     Expanded(
                       child: Text(
-                        loc.translate('seller_account'),
+                        user?.businessName != null ? 'Owner: $ownerName' : loc.translate('seller_account'),
                         style: const TextStyle(
                           color: Color(0xFF10B981),
                           fontSize: 12,
-                          fontWeight: FontWeight.w500,
+                          fontWeight: FontWeight.w600,
                         ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,

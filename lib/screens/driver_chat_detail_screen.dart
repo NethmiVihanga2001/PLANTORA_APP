@@ -53,51 +53,23 @@ class _DriverChatDetailScreenState extends State<DriverChatDetailScreen> {
   }
 
   Future<void> _loadMessages() async {
-    await Future.delayed(const Duration(milliseconds: 400));
+    final thread = DriverChatService().getThread(widget.threadId);
     if (mounted) {
       setState(() {
-        _messages = _getStarterMessages();
+        if (thread != null) {
+          _messages = thread.messages.map((m) => {
+            'senderId': m.isMe ? 'me' : 'other_id',
+            'text': m.text,
+            'timestamp': m.timestamp.toIso8601String(),
+            'status': 'sent',
+          }).toList();
+        } else {
+          _messages = [];
+        }
         _isLoading = false;
       });
       _scrollToBottom();
     }
-  }
-
-  List<Map<String, dynamic>> _getStarterMessages() {
-    final now = DateTime.now();
-    if (_role == 'Customer') {
-      return [
-        {
-          'senderId': 'other_id',
-          'text': 'Hello! I picked up your Monstera plant from Green Haven Nursery.',
-          'timestamp': now.subtract(const Duration(minutes: 15)).toIso8601String(),
-        },
-        {
-          'senderId': 'me',
-          'text': 'Awesome! How long until you arrive?',
-          'timestamp': now.subtract(const Duration(minutes: 10)).toIso8601String(),
-          'status': 'read',
-        },
-        {
-          'senderId': 'other_id',
-          'text': 'I am near your location now. Arriving in 10 mins!',
-          'timestamp': now.subtract(const Duration(minutes: 2)).toIso8601String(),
-        },
-      ];
-    }
-    return [
-      {
-        'senderId': 'other_id',
-        'text': '🌿 Your order is ready for pickup. Please come to the front counter.',
-        'timestamp': now.subtract(const Duration(minutes: 20)).toIso8601String(),
-      },
-      {
-        'senderId': 'me',
-        'text': 'On my way! ETA 5 minutes.',
-        'timestamp': now.subtract(const Duration(minutes: 15)).toIso8601String(),
-        'status': 'read',
-      },
-    ];
   }
 
   void _scrollToBottom() {
@@ -128,44 +100,6 @@ class _DriverChatDetailScreenState extends State<DriverChatDetailScreen> {
     });
     _scrollToBottom();
     DriverChatService().sendMessage(widget.threadId, text);
-    _simulateRealTimeResponse(text);
-  }
-
-  void _simulateRealTimeResponse(String query) {
-    Timer(const Duration(milliseconds: 700), () {
-      if (mounted) setState(() => _isOtherTyping = true);
-      _scrollToBottom();
-    });
-    Timer(const Duration(milliseconds: 2100), () {
-      if (!mounted) return;
-      HapticFeedback.selectionClick();
-      setState(() {
-        _isOtherTyping = false;
-        _messages.add({
-          'senderId': 'other_id',
-          'text': _generateSmartReply(query),
-          'timestamp': DateTime.now().toIso8601String(),
-          'status': 'delivered',
-        });
-      });
-      _scrollToBottom();
-    });
-  }
-
-  String _generateSmartReply(String query) {
-    final lower = query.toLowerCase();
-    if (_role == 'Customer') {
-      if (lower.contains('arrive') || lower.contains('where') || lower.contains('time')) {
-        return '📍 I am almost there! About 2-3 minutes away. Will call on arrival.';
-      }
-      if (lower.contains('call')) return '📞 Will call you right away!';
-      return 'Got it! On my way with your order safely secured. 🏍️';
-    }
-    // Seller
-    if (lower.contains('ready') || lower.contains('pick')) {
-      return '✅ Order is packed and waiting at the pickup counter. Ask for order ${widget.threadId}.';
-    }
-    return 'Thank you! Let me know if there are any special instructions. 🌿';
   }
 
   Future<void> _pickImage(ImageSource source) async {
@@ -181,7 +115,6 @@ class _DriverChatDetailScreenState extends State<DriverChatDetailScreen> {
         });
       });
       _scrollToBottom();
-      _simulateRealTimeResponse('Here is a photo');
     }
   }
 
@@ -392,10 +325,12 @@ class _DriverChatDetailScreenState extends State<DriverChatDetailScreen> {
                       try {
                         final ts = msg['timestamp'];
                         if (ts != null) {
-                          final dt = DateTime.tryParse(ts.toString());
+                          final dt = DateTime.tryParse(ts.toString())?.toLocal();
                           if (dt != null) {
-                            timeStr =
-                                '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+                            final hour12 = dt.hour == 0 ? 12 : (dt.hour > 12 ? dt.hour - 12 : dt.hour);
+                            final ampm = dt.hour >= 12 ? 'PM' : 'AM';
+                            final min = dt.minute.toString().padLeft(2, '0');
+                            timeStr = '$hour12:$min $ampm';
                           }
                         }
                       } catch (_) {}

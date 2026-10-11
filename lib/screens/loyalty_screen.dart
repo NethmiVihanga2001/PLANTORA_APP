@@ -4,6 +4,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
 import '../providers/cart_provider.dart';
+import '../providers/localization_provider.dart';
 import '../widgets/premium_app_bar.dart';
 import '../widgets/responsive_layout.dart';
 import '../widgets/app_drawer.dart';
@@ -35,7 +36,7 @@ class _LoyaltyScreenState extends State<LoyaltyScreen> with SingleTickerProvider
   void _claimOffer(String title, int cost) {
     final authProvider = context.read<AuthProvider>();
     final cartProvider = context.read<CartProvider>();
-    final currentPoints = authProvider.user?.points ?? 250;
+    final currentPoints = authProvider.user?.points ?? 10;
 
     if (currentPoints >= cost) {
       authProvider.deductPoints(cost);
@@ -107,13 +108,14 @@ class _LoyaltyScreenState extends State<LoyaltyScreen> with SingleTickerProvider
   @override
   Widget build(BuildContext context) {
     final isDark = context.isDark;
+    final loc = context.watch<LocalizationProvider>();
 
     return Scaffold(
       backgroundColor: context.scaffoldBg,
       drawer: const AppDrawer(),
-      appBar: const PremiumAppBar(
-        title: 'Loyalty & Rewards',
-        subtitle: 'Earn Cheer Points & unlock VIP perks',
+      appBar: PremiumAppBar(
+        title: loc.translate('loyalty_rewards'),
+        subtitle: loc.translate('available_offers'),
         showMenuButton: true,
       ),
       body: SingleChildScrollView(
@@ -164,10 +166,10 @@ class _LoyaltyScreenState extends State<LoyaltyScreen> with SingleTickerProvider
                   unselectedLabelStyle: GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 13),
                   indicatorSize: TabBarIndicatorSize.tab,
                   dividerColor: Colors.transparent,
-                  tabs: const [
-                    Tab(text: '🎁 Rewards'),
-                    Tab(text: '⭐ Earn Points'),
-                    Tab(text: '👑 VIP Tiers'),
+                  tabs: [
+                    Tab(text: '🎁 ${loc.translate('rewards')}'),
+                    Tab(text: '⭐ ${loc.translate('earn_points')}'),
+                    Tab(text: '👑 ${loc.translate('vip_tiers')}'),
                   ],
                 ),
               ),
@@ -260,7 +262,7 @@ class _LoyaltyScreenState extends State<LoyaltyScreen> with SingleTickerProvider
     required int index,
   }) {
     final isDark = context.isDark;
-    final currentPoints = context.watch<AuthProvider>().user?.points ?? 250;
+    final currentPoints = context.watch<AuthProvider>().user?.points ?? 10;
     final cartProvider = context.watch<CartProvider>();
     final bool isActiveInCart = cartProvider.activeRewardTitle == title;
     final bool canAfford = currentPoints >= cost;
@@ -387,7 +389,7 @@ class _LoyaltyScreenState extends State<LoyaltyScreen> with SingleTickerProvider
                       const SizedBox(width: 6),
                       Flexible(
                         child: Text(
-                          '$cost Cheer Points',
+                          '$cost ${context.watch<LocalizationProvider>().translate('cheer_points')}',
                           style: GoogleFonts.outfit(
                             fontSize: 13.5,
                             fontWeight: FontWeight.w700,
@@ -424,8 +426,10 @@ class _LoyaltyScreenState extends State<LoyaltyScreen> with SingleTickerProvider
                         ],
                         Text(
                           isActiveInCart
-                              ? 'Active in Cart'
-                              : (canAfford ? 'Claim Reward' : 'Need $cost pts'),
+                              ? context.watch<LocalizationProvider>().translate('in_cart')
+                              : (canAfford
+                                  ? context.watch<LocalizationProvider>().translate('claim_reward')
+                                  : 'Need $cost pts'),
                           style: GoogleFonts.outfit(
                             fontSize: 13,
                             fontWeight: FontWeight.w700,
@@ -559,7 +563,7 @@ class _LoyaltyScreenState extends State<LoyaltyScreen> with SingleTickerProvider
 
   Widget _buildTiersTab() {
     final tiers = LoyaltyCard.levels;
-    final currentPoints = context.watch<AuthProvider>().user?.points ?? 250;
+    final currentPoints = context.watch<AuthProvider>().user?.points ?? 10;
     final isDark = context.isDark;
 
     return ListView.builder(
@@ -612,7 +616,7 @@ class _LoyaltyScreenState extends State<LoyaltyScreen> with SingleTickerProvider
                     Row(
                       children: [
                         Text(
-                          tier['name'] as String,
+                          context.watch<LocalizationProvider>().translate((tier['name'] as String).toLowerCase()),
                           style: GoogleFonts.outfit(
                             fontSize: 16,
                             fontWeight: FontWeight.w800,
@@ -628,7 +632,7 @@ class _LoyaltyScreenState extends State<LoyaltyScreen> with SingleTickerProvider
                               borderRadius: BorderRadius.circular(6),
                             ),
                             child: Text(
-                              'CURRENT TIER',
+                              context.watch<LocalizationProvider>().translate('current_tier'),
                               style: GoogleFonts.inter(
                                 fontSize: 9,
                                 fontWeight: FontWeight.w900,
@@ -642,7 +646,7 @@ class _LoyaltyScreenState extends State<LoyaltyScreen> with SingleTickerProvider
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      'Requires ${tier['minPoints']} Cheer Points',
+                      context.watch<LocalizationProvider>().translate('requires_points').replaceAll('{count}', tier['minPoints'].toString()),
                       style: GoogleFonts.inter(
                         fontSize: 12,
                         color: context.textSecondary,

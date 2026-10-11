@@ -60,12 +60,17 @@ class _DriverPayoutScreenState extends State<DriverPayoutScreen>
     return groups;
   }
 
-  String _dayKey(DateTime dt) =>
-      '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+  String _dayKey(DateTime dt) {
+    final local = dt.toLocal();
+    return '${local.year}-${local.month.toString().padLeft(2, '0')}-${local.day.toString().padLeft(2, '0')}';
+  }
 
   String _dayLabel(String key) {
-    final dt = DateTime.parse(key);
+    final dt = DateTime.parse(key).toLocal();
     final now = DateTime.now();
+    if (dt.year == now.year && dt.month == now.month && dt.day == now.day) {
+      return 'Today';
+    }
     final yesterday = now.subtract(const Duration(days: 1));
     if (dt.year == yesterday.year &&
         dt.month == yesterday.month &&
@@ -79,8 +84,13 @@ class _DriverPayoutScreenState extends State<DriverPayoutScreen>
     return '${dt.day} ${months[dt.month - 1]} ${dt.year}';
   }
 
-  String _formatTime(DateTime dt) =>
-      '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+  String _formatTime(DateTime dt) {
+    final local = dt.toLocal();
+    final hour12 = local.hour == 0 ? 12 : (local.hour > 12 ? local.hour - 12 : local.hour);
+    final ampm = local.hour >= 12 ? 'PM' : 'AM';
+    final min = local.minute.toString().padLeft(2, '0');
+    return '$hour12:$min $ampm';
+  }
 
   // ── Build ─────────────────────────────────────────────────────────────────
 

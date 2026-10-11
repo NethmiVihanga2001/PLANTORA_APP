@@ -11,6 +11,7 @@ import '../theme/app_theme.dart';
 import '../providers/auth_provider.dart';
 import '../config/app_config.dart';
 import '../services/auth_service.dart';
+import '../services/chat_service.dart';
 
 class DriverChatScreen extends StatefulWidget {
   final OrderModel order;
@@ -46,7 +47,7 @@ class _DriverChatScreenState extends State<DriverChatScreen> {
       final token = await AuthService().getToken();
       final response = await http.get(
         Uri.parse('${AppConfig.baseUrl}/orders/${widget.order.id}/messages'),
-        headers: {'Authorization': 'Bearer $token'},
+        headers: AppConfig.headers({'Authorization': 'Bearer $token'}),
       );
       if (response.statusCode == 200) {
         final List<dynamic> data = json.decode(response.body);
@@ -70,7 +71,8 @@ class _DriverChatScreenState extends State<DriverChatScreen> {
 
   void _initSocket() {
     _socket = IO.io(AppConfig.baseUrl, <String, dynamic>{
-      'transports': ['websocket'],
+      'transports': ['websocket', 'polling'],
+      'extraHeaders': AppConfig.defaultHeaders,
       'autoConnect': false,
       'forceNew': true,
     });
@@ -78,21 +80,36 @@ class _DriverChatScreenState extends State<DriverChatScreen> {
     _socket.onConnect((_) {
       print('Connected to Chat Socket');
       _socket.emit('joinOrderRoom', widget.order.id);
+      _socket.emit('join_order', widget.order.id);
     });
 
-    _socket.on('receiveMessage', (data) {
-      if (mounted) {
-        setState(() {
-          _messages.add({
-            'message': data['message'],
-            'senderId': data['senderId'],
-            'senderName': data['senderName'],
-            'timestamp': data['timestamp'] ?? DateTime.now().toIso8601String(),
-          });
-        });
-        _scrollToBottom();
+    void handleIncomingMessage(dynamic data) {
+      if (mounted && data is Map) {
+        final msgText = (data['message'] ?? data['text'] ?? '').toString();
+        if (msgText.isNotEmpty && data['senderId'] != _currentUserId) {
+          final exists = _messages.any((m) =>
+              m['senderId'] == data['senderId'] &&
+              m['timestamp'] == data['timestamp'] &&
+              (m['message'] ?? m['text']) == msgText);
+          if (!exists) {
+            setState(() {
+              _messages.add({
+                'message': msgText,
+                'text': msgText,
+                'senderId': data['senderId'],
+                'senderName': data['senderName'],
+                'timestamp': data['timestamp'] ?? DateTime.now().toIso8601String(),
+              });
+            });
+            _scrollToBottom();
+          }
+        }
       }
-    });
+    }
+
+    _socket.on('receiveMessage', handleIncomingMessage);
+    _socket.on('order_message_${widget.order.id}', handleIncomingMessage);
+    _socket.on('order_message_$_currentUserId', handleIncomingMessage);
 
     _socket.connect();
   }
@@ -103,12 +120,35 @@ class _DriverChatScreenState extends State<DriverChatScreen> {
     final message = _messageController.text.trim();
     _messageController.clear();
 
+    final newMsg = {
+      'message': message,
+      'text': message,
+      'senderId': _currentUserId,
+      'senderName': _currentUserName,
+      'timestamp': DateTime.now().toIso8601String(),
+    };
+
+    setState(() {
+      _messages.add(newMsg);
+    });
+    _scrollToBottom();
+
+    // 1. Emit live via Socket.IO
     _socket.emit('sendMessage', {
       'orderId': widget.order.id,
       'message': message,
+      'text': message,
       'senderId': _currentUserId,
       'senderName': _currentUserName,
     });
+
+    // 2. Persist with HTTP fallback
+    ChatService().sendOrderMessage(
+      widget.order.id,
+      _currentUserId,
+      message,
+      senderName: _currentUserName,
+    );
   }
 
   void _scrollToBottom() {
@@ -125,7 +165,7 @@ class _DriverChatScreenState extends State<DriverChatScreen> {
 
   Future<void> _makePhoneCall() async {
     final phone = widget.order.phone;
-    if (phone != null && phone.isNotEmpty) {
+    if (phone.isNotEmpty) {
       final uri = Uri.parse('tel:$phone');
       try {
         final bool launched = await launchUrl(
@@ -209,7 +249,7 @@ class _DriverChatScreenState extends State<DriverChatScreen> {
                     children: [
                       Text(
                         _currentUserRole == 'Driver'
-                            ? (widget.order.customerName ?? 'Customer')
+                            ? widget.order.customerName
                             : (widget.order.driverName ?? 'Driver'),
                         style: GoogleFonts.inter(
                           fontSize: 16,
@@ -257,11 +297,52 @@ class _DriverChatScreenState extends State<DriverChatScreen> {
       body: Column(
         children: [
           Expanded(
-            child: ListView.builder(
-              controller: _scrollController,
-              padding: const EdgeInsets.all(16),
-              itemCount: _messages.length,
-              itemBuilder: (context, index) {
+            child: _messages.isEmpty
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 32),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(20),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF10B981).withOpacity(0.12),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(
+                              Icons.chat_bubble_outline_rounded,
+                              size: 40,
+                              color: Color(0xFF10B981),
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            'No messages yet',
+                            style: GoogleFonts.outfit(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w700,
+                              color: isDark ? Colors.white : const Color(0xFF0F172A),
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            'Send a message regarding this order to start the conversation.',
+                            textAlign: TextAlign.center,
+                            style: GoogleFonts.inter(
+                              fontSize: 13,
+                              color: isDark ? Colors.white60 : Colors.black54,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                : ListView.builder(
+                    controller: _scrollController,
+                    padding: const EdgeInsets.all(16),
+                    itemCount: _messages.length,
+                    itemBuilder: (context, index) {
                 final msg = _messages[index];
                 final isMe = msg['senderId'] == _currentUserId;
                 final text = msg['message'] ?? '';
@@ -270,8 +351,11 @@ class _DriverChatScreenState extends State<DriverChatScreen> {
                 String timeStr = '';
                 try {
                   if (msg['timestamp'] != null) {
-                    final dt = DateTime.parse(msg['timestamp']);
-                    timeStr = '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+                    final dt = DateTime.parse(msg['timestamp'].toString()).toLocal();
+                    final hour12 = dt.hour == 0 ? 12 : (dt.hour > 12 ? dt.hour - 12 : dt.hour);
+                    final ampm = dt.hour >= 12 ? 'PM' : 'AM';
+                    final min = dt.minute.toString().padLeft(2, '0');
+                    timeStr = '$hour12:$min $ampm';
                   }
                 } catch (_) {}
 
@@ -300,10 +384,23 @@ class _DriverChatScreenState extends State<DriverChatScreen> {
                       ],
                     ),
                     child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        if (!isMe && (msg['senderName'] != null && msg['senderName'].toString().isNotEmpty)) ...[
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 2.0),
+                            child: Text(
+                              msg['senderName'].toString(),
+                              style: GoogleFonts.inter(
+                                color: const Color(0xFF10B981),
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ],
                         Padding(
-                          padding: const EdgeInsets.only(right: 40.0, bottom: 4.0),
+                          padding: const EdgeInsets.only(right: 36.0, bottom: 4.0),
                           child: Text(
                             text,
                             style: GoogleFonts.inter(
@@ -313,26 +410,29 @@ class _DriverChatScreenState extends State<DriverChatScreen> {
                             ),
                           ),
                         ),
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          mainAxisAlignment: MainAxisAlignment.end,
-                          children: [
-                            Text(
-                              timeStr,
-                              style: GoogleFonts.inter(
-                                color: isDark ? const Color(0xFF8696A0) : const Color(0xFF667781),
-                                fontSize: 10,
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            children: [
+                              Text(
+                                timeStr,
+                                style: GoogleFonts.inter(
+                                  color: isDark ? const Color(0xFF8696A0) : const Color(0xFF667781),
+                                  fontSize: 10,
+                                ),
                               ),
-                            ),
-                            if (isMe) ...[
-                              const SizedBox(width: 4),
-                              Icon(
-                                Icons.done_all_rounded,
-                                size: 14,
-                                color: isDark ? const Color(0xFF53BDEB) : const Color(0xFF53BDEB),
-                              ),
+                              if (isMe) ...[
+                                const SizedBox(width: 4),
+                                const Icon(
+                                  Icons.done_all_rounded,
+                                  size: 14,
+                                  color: Color(0xFF53BDEB),
+                                ),
+                              ],
                             ],
-                          ],
+                          ),
                         ),
                       ],
                     ),

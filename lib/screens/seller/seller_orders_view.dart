@@ -5,6 +5,16 @@ import '../../../theme/app_theme.dart';
 import '../../../models/order_model.dart';
 import '../../../services/order_service.dart';
 import '../../../widgets/premium_app_bar.dart';
+import '../../../config/app_config.dart';
+import '../../../widgets/product_image.dart';
+
+import 'dart:async';
+import '../../../services/socket_service.dart';
+import '../../../models/user_model.dart';
+import '../../../services/auth_service.dart';
+import '../../../services/chat_service.dart';
+import '../chat_detail_screen.dart';
+import '../driver_chat_screen.dart';
 
 class SellerOrdersView extends StatefulWidget {
   final VoidCallback onMenuTap;
@@ -20,7 +30,10 @@ class _SellerOrdersViewState extends State<SellerOrdersView>
   List<OrderModel> _orders = [];
   bool _isLoading = true;
   String _selectedFilter = 'All';
+  UserModel? _currentUser;
   late AnimationController _pulseController;
+  StreamSubscription? _socketSub;
+  StreamSubscription? _notifSub;
 
   final List<String> _filters = ['All', 'Pending', 'Preparing', 'Shipped', 'Delivered', 'Cancelled'];
 
@@ -31,118 +44,48 @@ class _SellerOrdersViewState extends State<SellerOrdersView>
       vsync: this,
       duration: const Duration(seconds: 2),
     )..repeat(reverse: true);
+
+    _socketSub = SocketService().orderStatusStream.listen((data) {
+      if (mounted) {
+        final deletedId = data['orderId'];
+        if (data['status'] == 'Deleted' && deletedId != null) {
+          setState(() {
+            _orders.removeWhere((o) => o.id == deletedId);
+          });
+        } else {
+          _loadOrders();
+        }
+      }
+    });
+
+    _notifSub = SocketService().notificationStream.listen((data) {
+      if (mounted) _loadOrders();
+    });
+
+    AuthService().getCurrentUser().then((u) {
+      if (mounted) setState(() => _currentUser = u);
+    });
+
     _loadOrders();
   }
 
   @override
   void dispose() {
     _pulseController.dispose();
+    _socketSub?.cancel();
+    _notifSub?.cancel();
+    ScaffoldMessenger.of(context).clearSnackBars();
     super.dispose();
   }
 
-  List<OrderModel> _getSampleOrders() {
-    return [
-      OrderModel(
-        id: 'ORD-2026-9481',
-        customerId: 'c1',
-        customerName: 'Amal Perera',
-        totalAmount: 5450.0,
-        subtotalAmount: 4950.0,
-        deliveryFee: 500.0,
-        shippingAddress: 'No. 45, Flower Road, Colombo 07',
-        phone: '+94 77 482 9102',
-        status: 'Pending',
-        createdAt: DateTime.now().subtract(const Duration(minutes: 25)),
-        items: [
-          OrderItem(productId: 'p1', title: 'Monstera Deliciosa (Swiss Cheese)', price: 3500.0, quantity: 1, sellerId: 's1', emoji: '🪴'),
-          OrderItem(productId: 'p2', title: 'Organic Botanical Fertilizer 500g', price: 1950.0, quantity: 1, sellerId: 's1', emoji: '🌱'),
-        ],
-      ),
-      OrderModel(
-        id: 'ORD-2026-8812',
-        customerId: 'c2',
-        customerName: 'Dinusha Wickramasinghe',
-        totalAmount: 8200.0,
-        subtotalAmount: 7600.0,
-        deliveryFee: 600.0,
-        shippingAddress: '12/A, Kandy Road, Kiribathgoda',
-        phone: '+94 71 883 2049',
-        status: 'Preparing',
-        createdAt: DateTime.now().subtract(const Duration(hours: 2)),
-        items: [
-          OrderItem(productId: 'p3', title: 'Fiddle Leaf Fig Tree (Ficus Lyrata)', price: 6800.0, quantity: 1, sellerId: 's1', emoji: '🌿'),
-          OrderItem(productId: 'p4', title: 'Terracotta Clay Pot (Large)', price: 1400.0, quantity: 1, sellerId: 's1', emoji: '🏺'),
-        ],
-      ),
-      OrderModel(
-        id: 'ORD-2026-7530',
-        customerId: 'c3',
-        customerName: 'Kasun Rajapaksha',
-        totalAmount: 3850.0,
-        subtotalAmount: 3400.0,
-        deliveryFee: 450.0,
-        shippingAddress: '88, Beach Road, Mount Lavinia',
-        phone: '+94 75 991 4028',
-        status: 'Shipped',
-        driverName: 'Kamal Silva (Rider #2)',
-        driverPhone: '+94 77 882 1199',
-        vehicleType: 'Motorcycle',
-        vehiclePlate: 'WP BIZ-8492',
-        createdAt: DateTime.now().subtract(const Duration(hours: 4)),
-        items: [
-          OrderItem(productId: 'p5', title: 'Golden Pothos Hanging Vine', price: 1450.0, quantity: 2, sellerId: 's1', emoji: '🍃'),
-          OrderItem(productId: 'p6', title: 'Plant Moisture Meter Sensor', price: 950.0, quantity: 1, sellerId: 's1', emoji: '⚡'),
-        ],
-      ),
-      OrderModel(
-        id: 'ORD-2026-6194',
-        customerId: 'c4',
-        customerName: 'Nipuni Fernando',
-        totalAmount: 4200.0,
-        subtotalAmount: 3750.0,
-        deliveryFee: 450.0,
-        shippingAddress: '24, Galle Road, Panadura',
-        phone: '+94 70 334 1180',
-        status: 'Delivered',
-        createdAt: DateTime.now().subtract(const Duration(hours: 8)),
-        items: [
-          OrderItem(productId: 'p7', title: 'Sansevieria Snake Plant', price: 2200.0, quantity: 1, sellerId: 's1', emoji: '🪴'),
-          OrderItem(productId: 'p8', title: 'Peace Lily (Spathiphyllum)', price: 2000.0, quantity: 1, sellerId: 's1', emoji: '🌸'),
-        ],
-      ),
-      OrderModel(
-        id: 'ORD-2026-4105',
-        customerId: 'c5',
-        customerName: 'Nethmi Vihanga',
-        totalAmount: 4105.0,
-        subtotalAmount: 3705.0,
-        deliveryFee: 400.0,
-        shippingAddress: 'Peradeniya Road, Kandy',
-        phone: '+94 77 012 4960',
-        status: 'Cancelled',
-        createdAt: DateTime.now().subtract(const Duration(days: 1)),
-        items: [
-          OrderItem(productId: 'p9', title: 'Variegated Monstera Albo', price: 4105.0, quantity: 1, sellerId: 's1', emoji: '✨'),
-        ],
-      ),
-    ];
-  }
 
   Future<void> _loadOrders() async {
     setState(() => _isLoading = true);
     final fetched = await _orderService.getOrders();
-    final samples = _getSampleOrders();
-
-    final List<OrderModel> combined = List.from(fetched);
-    for (final s in samples) {
-      if (!combined.any((o) => o.id == s.id)) {
-        combined.add(s);
-      }
-    }
 
     if (mounted) {
       setState(() {
-        _orders = combined;
+        _orders = fetched;
         _isLoading = false;
       });
     }
@@ -156,21 +99,39 @@ class _SellerOrdersViewState extends State<SellerOrdersView>
       }
     });
 
-    await _orderService.updateOrderStatus(orderId, status);
+    final success = await _orderService.updateOrderStatus(orderId, status);
+    if (status == 'Shipped') {
+      await _orderService.ringForDelivery(orderId, 500.0);
+      SocketService().ringForDelivery(orderId, 500.0);
+    }
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Row(children: [
-            const Icon(Icons.check_circle, color: Colors.white),
-            const SizedBox(width: 8),
-            Text('Order status updated to "$status"'),
-          ]),
-          backgroundColor: const Color(0xFF10B981),
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        ),
-      );
+      ScaffoldMessenger.of(context).clearSnackBars();
+      if (success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            duration: const Duration(seconds: 2),
+            content: Row(children: [
+              const Icon(Icons.check_circle, color: Colors.white),
+              const SizedBox(width: 8),
+              Text('Order status updated to "$status"'),
+            ]),
+            backgroundColor: const Color(0xFF10B981),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            duration: const Duration(seconds: 2),
+            content: Text('Failed to update order status. Please try again.'),
+            backgroundColor: Colors.redAccent,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+        );
+      }
     }
   }
 
@@ -237,16 +198,20 @@ class _SellerOrdersViewState extends State<SellerOrdersView>
                               ],
                             ),
                           ),
-                          onDismissed: (direction) {
+                          onDismissed: (direction) async {
                             final removedOrder = order;
                             final originalIndex = _orders.indexOf(order);
                             setState(() {
                               _orders.removeAt(originalIndex);
                             });
 
+                            await _orderService.deleteOrder(removedOrder.id);
+
+                            if (!mounted) return;
                             ScaffoldMessenger.of(context).clearSnackBars();
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(
+                                duration: const Duration(seconds: 2),
                                 content: Row(
                                   children: [
                                     const Icon(Icons.check_circle_outline, color: Color(0xFF34D399), size: 20),
@@ -262,10 +227,11 @@ class _SellerOrdersViewState extends State<SellerOrdersView>
                                 action: SnackBarAction(
                                   label: 'UNDO',
                                   textColor: const Color(0xFF34D399),
-                                  onPressed: () {
+                                  onPressed: () async {
                                     setState(() {
                                       _orders.insert(originalIndex, removedOrder);
                                     });
+                                    await _orderService.restoreOrder(removedOrder.id);
                                   },
                                 ),
                                 backgroundColor: const Color(0xFF111827),
@@ -443,6 +409,157 @@ class _SellerOrdersViewState extends State<SellerOrdersView>
     );
   }
 
+  String _getPlantImageUrl(String title, String? imageUrl) {
+    if (imageUrl != null && imageUrl.trim().isNotEmpty) {
+      if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
+        return imageUrl;
+      }
+      if (imageUrl.startsWith('/uploads')) {
+        return '${AppConfig.baseUrl}$imageUrl';
+      }
+      return imageUrl;
+    }
+
+    final t = title.trim().toLowerCase();
+    if (t.contains('karapincha') || t.contains('curry')) {
+      return 'https://images.unsplash.com/photo-1615485290382-441e4d049cb5?auto=format&fit=crop&w=400&q=80';
+    } else if (t.contains('kumarika') || t.contains('aloe')) {
+      return 'https://images.unsplash.com/photo-1596547609652-9cf5d8d76921?auto=format&fit=crop&w=400&q=80';
+    } else if (t.contains('kohomba') || t.contains('neem')) {
+      return 'https://images.unsplash.com/photo-1518531933037-91b2f5f229cc?auto=format&fit=crop&w=400&q=80';
+    } else if (t.contains('monstera')) {
+      return 'https://images.unsplash.com/photo-1614594975525-e45190c55d0b?auto=format&fit=crop&w=400&q=80';
+    } else if (t.contains('lavender')) {
+      return 'https://images.unsplash.com/photo-1528183429752-a97d0bf99b5a?auto=format&fit=crop&w=400&q=80';
+    } else if (t.contains('rosemary')) {
+      return 'https://images.unsplash.com/photo-1515542706656-c30e16a65529?auto=format&fit=crop&w=400&q=80';
+    } else if (t.contains('mint')) {
+      return 'https://images.unsplash.com/photo-1628556270448-4d4e4148e1b1?auto=format&fit=crop&w=400&q=80';
+    } else if (t.contains('snake') || t.contains('sansevieria')) {
+      return 'https://images.unsplash.com/photo-1593482892290-f54927ae1bf6?auto=format&fit=crop&w=400&q=80';
+    }
+    return 'https://images.unsplash.com/photo-1545241047-6083a3684587?auto=format&fit=crop&w=400&q=80';
+  }
+
+  Widget _buildPlantImage(String title, String? imageUrl, {double size = 38}) {
+    return ProductImage(
+      imageUrl: (imageUrl != null && imageUrl.isNotEmpty) ? imageUrl : _getPlantImageUrl(title, imageUrl),
+      width: size,
+      height: size,
+      fit: BoxFit.cover,
+      borderRadius: BorderRadius.circular(10),
+    );
+  }
+
+  String _getCustomerAvatarUrl(String customerName, String? avatar) {
+    if (avatar != null && avatar.trim().isNotEmpty && avatar != 'null' && !avatar.contains('unsplash.com')) {
+      if (avatar.startsWith('http://') || avatar.startsWith('https://') || avatar.startsWith('data:image')) return avatar;
+      if (avatar.startsWith('/uploads') || avatar.startsWith('/avatars')) return '${AppConfig.baseUrl}$avatar';
+      return avatar;
+    }
+    return '';
+  }
+
+  String _formatDate(DateTime dt) {
+    final local = dt.toLocal();
+    final months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    final day = local.day.toString().padLeft(2, '0');
+    final month = months[local.month - 1];
+    final year = local.year;
+    final hour12 = local.hour == 0 ? 12 : (local.hour > 12 ? local.hour - 12 : local.hour);
+    final ampm = local.hour >= 12 ? 'PM' : 'AM';
+    final min = local.minute.toString().padLeft(2, '0');
+    return '$day $month $year • $hour12:$min $ampm';
+  }
+
+  Widget _buildCustomerAvatar(OrderModel order) {
+    final statusColor = order.orderStatus.color;
+    final avatar = order.customerAvatar;
+    final initial = order.customerName.trim().isNotEmpty
+        ? order.customerName.trim()[0].toUpperCase()
+        : 'C';
+
+    final bool hasCustomPhoto = avatar != null &&
+        avatar.trim().isNotEmpty &&
+        avatar != 'null' &&
+        !avatar.contains('unsplash.com');
+
+    String? photoUrl;
+    if (hasCustomPhoto) {
+      if (avatar.startsWith('http://') || avatar.startsWith('https://') || avatar.startsWith('data:image')) {
+        photoUrl = avatar;
+      } else if (avatar.startsWith('/uploads') || avatar.startsWith('/avatars')) {
+        photoUrl = '${AppConfig.baseUrl}$avatar';
+      }
+    }
+
+    return Stack(
+      children: [
+        Container(
+          width: 44,
+          height: 44,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(color: const Color(0xFF10B981), width: 1.8),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF10B981).withValues(alpha: 0.25),
+                blurRadius: 6,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: ClipOval(
+            child: photoUrl != null
+                ? Image.network(
+                    photoUrl,
+                    width: 44,
+                    height: 44,
+                    fit: BoxFit.cover,
+                    errorBuilder: (context, error, stackTrace) => _buildInitialBadge(initial),
+                  )
+                : _buildInitialBadge(initial),
+          ),
+        ),
+        Positioned(
+          right: 0,
+          bottom: 0,
+          child: Container(
+            width: 13,
+            height: 13,
+            decoration: BoxDecoration(
+              color: statusColor,
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white, width: 2),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildInitialBadge(String initial) {
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF047857), Color(0xFF10B981)],
+        ),
+      ),
+      child: Center(
+        child: Text(
+          initial,
+          style: GoogleFonts.outfit(
+            color: Colors.white,
+            fontSize: 19,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildOrderCard(OrderModel order, int index) {
     final statusColor = order.orderStatus.color;
     final isUrgent = order.status == 'Pending';
@@ -470,68 +587,87 @@ class _SellerOrdersViewState extends State<SellerOrdersView>
       child: Theme(
         data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
         child: ExpansionTile(
-          tilePadding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-          childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-          leading: Container(
-            width: 48,
-            height: 48,
-            decoration: BoxDecoration(
-              color: statusColor.withOpacity(0.14),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: statusColor.withOpacity(0.3)),
-            ),
-            child: Icon(order.orderStatus.icon, color: statusColor, size: 22),
-          ),
-          title: Row(
+          tilePadding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+          childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+          leading: _buildCustomerAvatar(order),
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Expanded(
-                child: Text(
-                  order.customerName,
-                  style: GoogleFonts.outfit(
-                    color: context.textPrimary,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w700,
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      order.customerName,
+                      style: GoogleFonts.outfit(
+                        color: context.textPrimary,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
+                  if (isUrgent) ...[
+                    const SizedBox(width: 4),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: Colors.orange.withOpacity(0.3)),
+                      ),
+                      child: Text(
+                        'NEW',
+                        style: GoogleFonts.inter(color: Colors.orange, fontSize: 9, fontWeight: FontWeight.w800),
+                      ),
+                    ),
+                  ],
+                ],
               ),
-              if (isUrgent)
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
-                  decoration: BoxDecoration(
-                    color: Colors.orange.withOpacity(0.15),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.orange.withOpacity(0.3)),
+              const SizedBox(height: 2),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Rs. ${order.totalAmount.toStringAsFixed(0)}',
+                    style: GoogleFonts.outfit(
+                      color: const Color(0xFF10B981),
+                      fontSize: 13,
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
-                  child: Text(
-                    'NEW',
-                    style: GoogleFonts.inter(color: Colors.orange, fontSize: 9.5, fontWeight: FontWeight.w800),
+                  Flexible(
+                    child: Text(
+                      ' • ${order.items.length} item${order.items.length != 1 ? 's' : ''}',
+                      style: GoogleFonts.inter(color: context.textSecondary, fontSize: 11),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
-                ),
+                ],
+              ),
+              const SizedBox(height: 2),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.calendar_today_rounded, size: 10, color: context.textSecondary),
+                  const SizedBox(width: 3),
+                  Flexible(
+                    child: Text(
+                      _formatDate(order.createdAt),
+                      style: GoogleFonts.inter(color: context.textSecondary, fontSize: 10, fontWeight: FontWeight.w500),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
             ],
           ),
-          subtitle: Padding(
-            padding: const EdgeInsets.only(top: 4),
-            child: Row(
-              children: [
-                Text(
-                  'Rs. ${order.totalAmount.toStringAsFixed(0)}',
-                  style: GoogleFonts.outfit(
-                    color: const Color(0xFF10B981),
-                    fontSize: 14,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-                Text(
-                  '  •  ${order.items.length} item${order.items.length != 1 ? 's' : ''}',
-                  style: GoogleFonts.inter(color: context.textSecondary, fontSize: 12),
-                ),
-              ],
-            ),
-          ),
+          subtitle: null,
           trailing: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
             decoration: BoxDecoration(
               color: statusColor.withOpacity(0.14),
               borderRadius: BorderRadius.circular(10),
@@ -555,15 +691,7 @@ class _SellerOrdersViewState extends State<SellerOrdersView>
               padding: const EdgeInsets.only(bottom: 8),
               child: Row(
                 children: [
-                  Container(
-                    width: 32,
-                    height: 32,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF10B981).withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Center(child: Text(item.emoji, style: const TextStyle(fontSize: 16))),
-                  ),
+                  _buildPlantImage(item.title, item.imageUrl, size: 38),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
@@ -624,6 +752,90 @@ class _SellerOrdersViewState extends State<SellerOrdersView>
 
             const SizedBox(height: 14),
 
+            // Live Chat Action Buttons (Customer <-> Seller / Seller <-> Rider)
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF10B981).withValues(alpha: 0.12),
+                      foregroundColor: const Color(0xFF10B981),
+                      elevation: 0,
+                      side: BorderSide(color: const Color(0xFF10B981).withValues(alpha: 0.3)),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                    ),
+                    icon: const Icon(Icons.chat_bubble_outline_rounded, size: 16),
+                    label: Text(
+                      'Chat Customer',
+                      style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w700),
+                    ),
+                    onPressed: () async {
+                      final myId = _currentUser?.id ?? 'seller';
+                      final myName = _currentUser?.name ?? 'Seller';
+                      final myAvatar = _currentUser?.avatarUrl;
+                      final targetName = order.customerName.isNotEmpty ? order.customerName : 'Customer';
+                      final targetId = order.customerId.isNotEmpty ? order.customerId : 'customer';
+
+                      final chatData = await ChatService().initiateChat(
+                        targetId,
+                        myId,
+                        targetName,
+                        myName,
+                        myAvatar,
+                      );
+                      if (context.mounted) {
+                        final chatId = (chatData?['chatId'] ?? chatData?['id'] ?? 'chat_${targetId}_$myId').toString();
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => ChatDetailScreen(
+                              chatId: chatId,
+                              otherParticipantName: targetName,
+                              otherParticipantRole: 'Customer',
+                              plantTitle: order.items.isNotEmpty ? order.items.first.title : 'Order #${order.id.length > 6 ? order.id.substring(0, 6) : order.id}',
+                              plantPrice: order.totalAmount.toStringAsFixed(0),
+                              plantImageUrl: order.items.isNotEmpty ? order.items.first.imageUrl : null,
+                            ),
+                          ),
+                        );
+                      }
+                    },
+                  ),
+                ),
+                if (order.driverName != null || order.driverId != null) ...[
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.blueAccent.withValues(alpha: 0.12),
+                        foregroundColor: Colors.blueAccent,
+                        elevation: 0,
+                        side: BorderSide(color: Colors.blueAccent.withValues(alpha: 0.3)),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                      ),
+                      icon: const Icon(Icons.delivery_dining_rounded, size: 18),
+                      label: Text(
+                        'Chat Rider',
+                        style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w700),
+                      ),
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => DriverChatScreen(order: order),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ],
+            ),
+
+            const SizedBox(height: 12),
+
             // Status dropdown update row
             Row(
               children: [
@@ -664,6 +876,47 @@ class _SellerOrdersViewState extends State<SellerOrdersView>
                 ),
               ],
             ),
+
+            if (order.status == 'Pending' || order.status == 'Accepted' || order.status == 'Preparing') ...[
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF10B981),
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    padding: const EdgeInsets.symmetric(vertical: 11),
+                  ),
+                  icon: const Icon(Icons.two_wheeler_rounded, size: 18),
+                  label: Text(
+                    'Ring Nearby Drivers for Delivery',
+                    style: GoogleFonts.inter(fontSize: 12.5, fontWeight: FontWeight.w700),
+                  ),
+                  onPressed: () async {
+                    await _orderService.ringForDelivery(order.id, 500.0);
+                    SocketService().ringForDelivery(order.id, 500.0);
+                    _loadOrders();
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Row(
+                            children: [
+                              const Icon(Icons.check_circle_rounded, color: Colors.white),
+                              const SizedBox(width: 8),
+                              Expanded(child: Text('🚨 Ring dispatched to all nearby drivers!')),
+                            ],
+                          ),
+                          backgroundColor: const Color(0xFF10B981),
+                          behavior: SnackBarBehavior.floating,
+                        ),
+                      );
+                    }
+                  },
+                ),
+              ),
+            ],
           ],
         ),
       ),

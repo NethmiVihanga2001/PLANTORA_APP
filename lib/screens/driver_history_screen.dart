@@ -14,14 +14,7 @@ class _DriverHistoryScreenState extends State<DriverHistoryScreen> {
   String _selectedFilter = 'All';
   final List<String> _filters = ['All', 'Today', 'This Week', 'This Month'];
 
-  List<Map<String, dynamic>> _history = [
-    {'id': 'ORD-20261007-00142', 'date': 'Today, 2:30 PM', 'amount': '350.00', 'status': 'Completed', 'from': 'GreenRoots Shop', 'to': 'No. 45 Lotus Rd', 'distance': '3.2 km', 'duration': '15 min'},
-    {'id': 'ORD-20261007-00141', 'date': 'Today, 11:15 AM', 'amount': '280.00', 'status': 'Completed', 'from': 'Green Thumb Nursery', 'to': 'No. 12 Temple Ave', 'distance': '2.8 km', 'duration': '12 min'},
-    {'id': 'ORD-20261006-00138', 'date': 'Yesterday, 4:45 PM', 'amount': '420.00', 'status': 'Completed', 'from': 'Flora Lanka', 'to': 'No. 7 Marine Drive', 'distance': '4.1 km', 'duration': '18 min'},
-    {'id': 'ORD-20261006-00135', 'date': 'Yesterday, 1:20 PM', 'amount': '310.00', 'status': 'Completed', 'from': 'GreenRoots Shop', 'to': 'No. 88 Galle Rd', 'distance': '3.5 km', 'duration': '16 min'},
-    {'id': 'ORD-20261005-00130', 'date': '2 days ago, 3:00 PM', 'amount': '450.00', 'status': 'Completed', 'from': 'Green Thumb Nursery', 'to': 'No. 22 High Level Rd', 'distance': '5.0 km', 'duration': '22 min'},
-    {'id': 'ORD-20261005-00128', 'date': '2 days ago, 10:45 AM', 'amount': '190.00', 'status': 'Cancelled', 'from': 'Flora Lanka', 'to': 'No. 3 Park St', 'distance': '1.9 km', 'duration': '—'},
-  ];
+  List<Map<String, dynamic>> _history = [];
 
   void _deleteOrder(Map<String, dynamic> order, int index) {
     HapticFeedback.mediumImpact();

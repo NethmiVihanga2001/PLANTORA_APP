@@ -109,7 +109,7 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
     if (_cameras == null || _cameras!.isEmpty) return;
     final controller = CameraController(
       _cameras![index],
-      ResolutionPreset.high,
+      ResolutionPreset.medium,
       enableAudio: false,
     );
     try {
@@ -427,7 +427,7 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
                     const SizedBox(width: 8),
                     Flexible(
                       child: Text(
-                        _isAnalyzing ? '✦ Analyzing Plant with AI...' : loc.translate('scan_description'),
+                        _isAnalyzing ? loc.translate('identifying') : loc.translate('scan_description'),
                         style: GoogleFonts.inter(
                           color: Colors.white,
                           fontSize: 12.5,
@@ -491,7 +491,7 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
                             const Icon(Icons.center_focus_strong_rounded, color: Color(0xFF34D399), size: 20),
                             const SizedBox(width: 6),
                             Text(
-                              'Plantora Lens',
+                              loc.translate('plantora_lens'),
                               style: GoogleFonts.outfit(
                                 color: Colors.white,
                                 fontSize: 18,
@@ -912,6 +912,7 @@ class _GoogleLensResultsSheetState extends State<_GoogleLensResultsSheet> {
   @override
   Widget build(BuildContext context) {
     final themeProvider = Provider.of<ThemeProvider>(context);
+    final loc = Provider.of<LocalizationProvider>(context);
     final isDark = themeProvider.isDarkMode;
 
     // Theme Adaptive Color Tokens
@@ -1005,7 +1006,7 @@ class _GoogleLensResultsSheetState extends State<_GoogleLensResultsSheet> {
                           // Search Input Text Placeholder
                           Expanded(
                             child: Text(
-                              'Ask about this image',
+                              loc.translate('ask_about_this_image'),
                               style: GoogleFonts.inter(
                                 color: searchTextColor,
                                 fontSize: 13.5,
@@ -1055,7 +1056,7 @@ class _GoogleLensResultsSheetState extends State<_GoogleLensResultsSheet> {
                           ),
                         ),
                         child: Text(
-                          _tabs[index],
+                          loc.translate(_tabs[index].toLowerCase()),
                           style: GoogleFonts.inter(
                             color: isSelected ? tabActiveText : tabInactiveText,
                             fontSize: 13,
@@ -1090,6 +1091,7 @@ class _GoogleLensResultsSheetState extends State<_GoogleLensResultsSheet> {
 
   // ── Tab 1: All Overview (Google Lens AI Overview Style) ───────────────────
   Widget _buildAllOverviewTab(BuildContext context, bool isDark) {
+    final loc = Provider.of<LocalizationProvider>(context);
     final confidencePct = (widget.plant.confidenceScore * 100).toInt();
 
     final overviewBg = isDark ? const Color(0xFF0E3D28) : const Color(0xFFF8FAFC);
@@ -1134,7 +1136,7 @@ class _GoogleLensResultsSheetState extends State<_GoogleLensResultsSheet> {
                   Icon(Icons.auto_awesome, color: headerTitleColor, size: 18),
                   const SizedBox(width: 8),
                   Text(
-                    'AI Overview',
+                    loc.translate('ai_overview'),
                     style: GoogleFonts.outfit(
                       color: headerTitleColor,
                       fontSize: 16,
@@ -1149,7 +1151,7 @@ class _GoogleLensResultsSheetState extends State<_GoogleLensResultsSheet> {
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Text(
-                      '$confidencePct% Match',
+                      '$confidencePct% ${loc.translate('match')}',
                       style: GoogleFonts.inter(
                         color: matchBadgeText,
                         fontSize: 11.5,
@@ -1226,14 +1228,14 @@ class _GoogleLensResultsSheetState extends State<_GoogleLensResultsSheet> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Botanical Taxonomy',
+                loc.translate('botanical_taxonomy'),
                 style: GoogleFonts.outfit(color: primaryTextColor, fontSize: 15, fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 12),
-              _buildSpecRow('Common Name', widget.plant.name, isDark: isDark),
-              _buildSpecRow('Scientific Name', widget.plant.scientificName, isItalic: true, isDark: isDark),
-              _buildSpecRow('Botanical Family', widget.plant.family, isDark: isDark),
-              _buildSpecRow('Category', widget.plant.category.toUpperCase(), isDark: isDark),
+              _buildSpecRow(loc.translate('common_name'), widget.plant.name, isDark: isDark),
+              _buildSpecRow(loc.translate('scientific_name'), widget.plant.scientificName, isItalic: true, isDark: isDark),
+              _buildSpecRow(loc.translate('botanical_family'), widget.plant.family, isDark: isDark),
+              _buildSpecRow(loc.translate('categories'), widget.plant.category.toUpperCase(), isDark: isDark),
             ],
           ),
         ),
@@ -1241,7 +1243,7 @@ class _GoogleLensResultsSheetState extends State<_GoogleLensResultsSheet> {
 
         // Quick Care Guide Cards Grid
         Text(
-          'Care Requirements',
+          loc.translate('care_requirements'),
           style: GoogleFonts.outfit(color: primaryTextColor, fontSize: 15, fontWeight: FontWeight.w700),
         ),
         const SizedBox(height: 10),
@@ -1253,9 +1255,9 @@ class _GoogleLensResultsSheetState extends State<_GoogleLensResultsSheet> {
           crossAxisSpacing: 10,
           childAspectRatio: 2.2,
           children: [
-            _buildCareQuickCard(Icons.wb_sunny_outlined, 'Sunlight', widget.plant.careInfo.sunlightRequirement, const Color(0xFFF59E0B), isDark),
-            _buildCareQuickCard(Icons.water_drop_outlined, 'Watering', widget.plant.careInfo.wateringFrequency, const Color(0xFF3B82F6), isDark),
-            _buildCareQuickCard(Icons.grass_outlined, 'Soil Mix', widget.plant.careInfo.soilType, const Color(0xFF10B981), isDark),
+            _buildCareQuickCard(Icons.wb_sunny_outlined, loc.translate('sunlight'), widget.plant.careInfo.sunlightRequirement, const Color(0xFFF59E0B), isDark),
+            _buildCareQuickCard(Icons.water_drop_outlined, loc.translate('watering'), widget.plant.careInfo.wateringFrequency, const Color(0xFF3B82F6), isDark),
+            _buildCareQuickCard(Icons.grass_outlined, loc.translate('soil'), widget.plant.careInfo.soilType, const Color(0xFF10B981), isDark),
             _buildCareQuickCard(Icons.thermostat_outlined, 'Temperature', widget.plant.careInfo.temperature, const Color(0xFFEC4899), isDark),
           ],
         ),
@@ -1274,7 +1276,7 @@ class _GoogleLensResultsSheetState extends State<_GoogleLensResultsSheet> {
                   );
                 },
                 icon: const Icon(Icons.shopping_bag_outlined, size: 18),
-                label: Text('Find in Shop', style: GoogleFonts.inter(fontWeight: FontWeight.w700, fontSize: 13)),
+                label: Text(loc.translate('buy_plant'), style: GoogleFonts.inter(fontWeight: FontWeight.w700, fontSize: 13)),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF10B981),
                   foregroundColor: Colors.white,
@@ -1288,7 +1290,7 @@ class _GoogleLensResultsSheetState extends State<_GoogleLensResultsSheet> {
               child: OutlinedButton.icon(
                 onPressed: () => widget.onOpenChat('How do I take care of ${widget.plant.name}?'),
                 icon: Icon(Icons.chat_bubble_outline_rounded, size: 18, color: headerTitleColor),
-                label: Text('Ask Chatbot', style: GoogleFonts.inter(fontWeight: FontWeight.w700, fontSize: 13, color: headerTitleColor)),
+                label: Text(loc.translate('ask_about_this_image'), style: GoogleFonts.inter(fontWeight: FontWeight.w700, fontSize: 13, color: headerTitleColor)),
                 style: OutlinedButton.styleFrom(
                   side: BorderSide(color: headerTitleColor, width: 1.5),
                   padding: const EdgeInsets.symmetric(vertical: 14),
@@ -1303,7 +1305,7 @@ class _GoogleLensResultsSheetState extends State<_GoogleLensResultsSheet> {
           child: TextButton.icon(
             onPressed: widget.onScanAnother,
             icon: Icon(Icons.camera_alt_outlined, color: subTextColor, size: 16),
-            label: Text('Scan Another Plant', style: GoogleFonts.inter(color: subTextColor, fontSize: 12.5)),
+            label: Text(loc.translate('scan_plant'), style: GoogleFonts.inter(color: subTextColor, fontSize: 12.5)),
           ),
         ),
       ],

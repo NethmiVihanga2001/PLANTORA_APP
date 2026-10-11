@@ -1,5 +1,6 @@
 import 'dart:ui';
 import 'dart:math' as math;
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:provider/provider.dart';
@@ -9,7 +10,9 @@ import '../../../providers/auth_provider.dart';
 import '../../../models/product_model.dart';
 import '../../../services/marketplace_service.dart';
 import '../../../services/auth_service.dart';
+import '../../../services/socket_service.dart';
 import '../../../widgets/premium_app_bar.dart';
+import '../../../widgets/product_image.dart';
 
 class SellerProductsView extends StatefulWidget {
   final VoidCallback onMenuTap;
@@ -36,6 +39,9 @@ class _SellerProductsViewState extends State<SellerProductsView>
     {'id': 'low_stock', 'label': 'Low Stock Alert', 'icon': '⚠️'},
   ];
 
+  StreamSubscription? _stockSub;
+  StreamSubscription? _marketSub;
+
   @override
   void initState() {
     super.initState();
@@ -44,29 +50,63 @@ class _SellerProductsViewState extends State<SellerProductsView>
       duration: const Duration(seconds: 3),
     )..repeat(reverse: true);
     _loadProducts();
+
+    // Live real-time stock sync
+    SocketService().connect();
+    _stockSub = SocketService().stockStream.listen((data) {
+      final pId = data['productId'];
+      final newStk = data['stock'];
+      final isAvail = data['isAvailable'] ?? ((newStk is num) ? newStk > 0 : true);
+      if (pId != null && newStk != null && mounted) {
+        setState(() {
+          final idx = _products.indexWhere((p) => p.id == pId);
+          if (idx != -1) {
+            _products[idx] = _products[idx].copyWith(
+              stock: (newStk as num).toInt(),
+              isAvailable: isAvail == true,
+            );
+          }
+        });
+      }
+    });
+
+    _marketSub = SocketService().marketplaceStream.listen((data) {
+      if (data['type'] == 'delete' || data['type'] == 'new_product') {
+        _loadProducts();
+      }
+    });
   }
 
   @override
   void dispose() {
+    _stockSub?.cancel();
+    _marketSub?.cancel();
     _fabController.dispose();
     super.dispose();
   }
 
   Future<void> _loadProducts() async {
     setState(() => _isLoading = true);
-    final user = context.read<AuthProvider>().user;
+    final user = context.read<AuthProvider>().user ?? await AuthService().getCurrentUser();
     final sellerId = user?.id ?? 's_demo';
-    final sellerName = user?.name ?? 'My Green Shop';
+    final sellerName = user?.businessName ?? user?.name ?? 'My Green Shop';
     final sellerLocation = user?.location ?? 'Colombo, Sri Lanka';
 
     final allProducts = await _marketplaceService.getProductsByCategory('all');
     
     List<ProductModel> sellerProds = [];
     if (user != null) {
-      sellerProds = allProducts.where((p) => p.sellerId == user.id).toList();
+      sellerProds = allProducts.where((p) =>
+        p.sellerId == user.id ||
+        p.sellerId == sellerId ||
+        p.sellerId == 's_demo' ||
+        p.sellerId.isEmpty ||
+        p.sellerName.toLowerCase().trim() == sellerName.toLowerCase().trim()
+      ).toList();
+    } else {
+      sellerProds = allProducts;
     }
 
-    // Auto populate high-quality sample plant products if inventory is empty
     if (sellerProds.isEmpty) {
       sellerProds = _getSampleProductsForSeller(sellerId, sellerName, sellerLocation);
     }
@@ -233,46 +273,47 @@ class _SellerProductsViewState extends State<SellerProductsView>
     ];
   }
 
-  void _adjustStock(ProductModel product, int delta) {
+  void _adjustStock(ProductModel product, int delta) async {
+    final newStock = math.max(0, product.stock + delta);
     setState(() {
       final index = _products.indexWhere((p) => p.id == product.id);
       if (index != -1) {
-        final newStock = math.max(0, _products[index].stock + delta);
-        _products[index] = ProductModel(
-          id: product.id,
-          title: product.title,
-          description: product.description,
-          price: product.price,
-          originalPrice: product.originalPrice,
-          category: product.category,
-          imageUrl: product.imageUrl,
-          emoji: product.emoji,
-          sellerId: product.sellerId,
-          sellerName: product.sellerName,
-          sellerLocation: product.sellerLocation,
-          sellerAvatar: product.sellerAvatar,
-          rating: product.rating,
-          reviewCount: product.reviewCount,
+        _products[index] = product.copyWith(
           stock: newStock,
           isAvailable: newStock > 0,
-          tags: product.tags,
-          createdAt: product.createdAt,
-          orderCount: product.orderCount,
         );
       }
     });
 
+    final token = await AuthService().getToken();
+    if (token != null) {
+      await _marketplaceService.updateStock(product.id, newStock, token);
+    }
+
+    if (!mounted) return;
     ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Row(
           children: [
-            Icon(delta > 0 ? Icons.add_circle : Icons.remove_circle, color: context.textPrimary, size: 18),
+            Icon(
+              newStock == 0 ? Icons.warning_amber_rounded : (delta > 0 ? Icons.add_circle : Icons.remove_circle),
+              color: Colors.white,
+              size: 18,
+            ),
             const SizedBox(width: 8),
-            Text('Stock updated for ${product.title}'),
+            Expanded(
+              child: Text(
+                newStock == 0
+                    ? '⚠️ ${product.title} is now OUT OF STOCK'
+                    : 'Stock for ${product.title} updated to $newStock',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
           ],
         ),
-        backgroundColor: const Color(0xFF10B981),
+        backgroundColor: newStock == 0 ? Colors.redAccent : const Color(0xFF10B981),
         behavior: SnackBarBehavior.floating,
         duration: const Duration(milliseconds: 1500),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -657,14 +698,14 @@ class _SellerProductsViewState extends State<SellerProductsView>
   }
 
   Widget _buildProductCard(ProductModel product, int index) {
-    final bool isLowStock = product.stock <= 5;
-    final bool isOutOfStock = product.stock == 0;
+    final bool isLowStock = product.stock <= 3 && product.stock > 0;
+    final bool isOutOfStock = product.stock <= 0;
 
     Color badgeColor = const Color(0xFF10B981);
     String badgeText = '${product.stock} in stock';
     if (isOutOfStock) {
       badgeColor = Colors.redAccent;
-      badgeText = 'Out of Stock';
+      badgeText = 'OUT OF STOCK';
     } else if (isLowStock) {
       badgeColor = const Color(0xFFF59E0B);
       badgeText = '⚠️ Low: ${product.stock} left';
@@ -722,27 +763,14 @@ class _SellerProductsViewState extends State<SellerProductsView>
                           color: const Color(0xFF10B981).withOpacity(0.2),
                         ),
                       ),
-                      child: ClipRRect(
+                      child: ProductImage(
+                        imageUrl: product.imageUrl,
+                        emoji: product.emoji,
+                        width: 82,
+                        height: 82,
+                        fit: BoxFit.cover,
+                        emojiSize: 34,
                         borderRadius: BorderRadius.circular(16),
-                        child: product.imageUrl.isNotEmpty
-                            ? Image.network(
-                                product.imageUrl,
-                                width: 82,
-                                height: 82,
-                                fit: BoxFit.cover,
-                                errorBuilder: (_, __, ___) => Center(
-                                  child: Text(
-                                    product.emoji,
-                                    style: const TextStyle(fontSize: 34),
-                                  ),
-                                ),
-                              )
-                            : Center(
-                                child: Text(
-                                  product.emoji,
-                                  style: const TextStyle(fontSize: 34),
-                                ),
-                              ),
                       ),
                     ),
                     Positioned(
@@ -853,14 +881,14 @@ class _SellerProductsViewState extends State<SellerProductsView>
                           const SizedBox(width: 8),
                           _buildStockButton(
                             icon: Icons.remove,
-                            onTap: () => _adjustStock(product, -1),
+                            onTap: product.stock > 0 ? () => _adjustStock(product, -1) : null,
                           ),
                           Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 8),
                             child: Text(
                               '${product.stock}',
                               style: GoogleFonts.outfit(
-                                color: context.textPrimary,
+                                color: isOutOfStock ? Colors.redAccent : context.textPrimary,
                                 fontSize: 13.5,
                                 fontWeight: FontWeight.w800,
                               ),
@@ -870,6 +898,29 @@ class _SellerProductsViewState extends State<SellerProductsView>
                             icon: Icons.add,
                             onTap: () => _adjustStock(product, 1),
                           ),
+                          if (isOutOfStock) ...[
+                            const SizedBox(width: 8),
+                            InkWell(
+                              onTap: () => _adjustStock(product, 10),
+                              borderRadius: BorderRadius.circular(8),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF10B981).withOpacity(0.15),
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(color: const Color(0xFF10B981), width: 0.8),
+                                ),
+                                child: Text(
+                                  '+10 Restock',
+                                  style: GoogleFonts.inter(
+                                    color: const Color(0xFF10B981),
+                                    fontSize: 9.5,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
                         ],
                       ),
                     ],
@@ -908,17 +959,28 @@ class _SellerProductsViewState extends State<SellerProductsView>
      .slideX(begin: 0.06, delay: Duration(milliseconds: 60 + index * 50));
   }
 
-  Widget _buildStockButton({required IconData icon, required VoidCallback onTap}) {
+  Widget _buildStockButton({required IconData icon, VoidCallback? onTap}) {
+    final bool isEnabled = onTap != null;
     return GestureDetector(
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.all(3),
         decoration: BoxDecoration(
-          color: const Color(0xFF10B981).withOpacity(0.14),
+          color: isEnabled
+              ? const Color(0xFF10B981).withOpacity(0.14)
+              : Colors.grey.withOpacity(0.1),
           borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: const Color(0xFF10B981).withOpacity(0.3)),
+          border: Border.all(
+            color: isEnabled
+                ? const Color(0xFF10B981).withOpacity(0.3)
+                : Colors.grey.withOpacity(0.2),
+          ),
         ),
-        child: Icon(icon, color: const Color(0xFF10B981), size: 14),
+        child: Icon(
+          icon,
+          color: isEnabled ? const Color(0xFF10B981) : Colors.grey,
+          size: 14,
+        ),
       ),
     );
   }

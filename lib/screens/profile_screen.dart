@@ -11,6 +11,7 @@ import 'package:provider/provider.dart';
 import '../config/app_config.dart';
 import '../models/user_model.dart';
 import '../providers/auth_provider.dart';
+import '../providers/localization_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_drawer.dart';
 import '../widgets/driver_drawer.dart';
@@ -19,6 +20,8 @@ import 'chat_list_screen.dart';
 import 'driver_vehicle_screen.dart';
 import 'driver_payout_screen.dart';
 import 'driver_history_screen.dart';
+import '../widgets/product_image.dart';
+
 
 // ── Premium Color Accents ────────────────────────────────────────────────────
 const _gold = Color(0xFFD4AF37);
@@ -42,6 +45,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
   late Animation<double> _shimmer;
 
   bool _isUploadingAvatar = false;
+  bool _isUploadingShopCover = false;
   final ImagePicker _picker = ImagePicker();
 
   @override
@@ -122,7 +126,140 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
     }
   }
 
+  Future<void> _pickAndUploadShopCover(ImageSource source) async {
+    try {
+      final XFile? file = await _picker.pickImage(source: source, imageQuality: 75, maxWidth: 1200);
+      if (file == null) return;
+
+      setState(() => _isUploadingShopCover = true);
+
+      final Uint8List bytes = await file.readAsBytes();
+      final authProvider = context.read<AuthProvider>();
+
+      final success = await authProvider.updateShopImage(bytes, file.name);
+
+      if (mounted) {
+        setState(() => _isUploadingShopCover = false);
+        if (success) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Row(
+                children: [
+                  Icon(Icons.check_circle_rounded, color: Colors.white),
+                  SizedBox(width: 10),
+                  Text('Shop cover photo updated successfully!'),
+                ],
+              ),
+              backgroundColor: _emeraldAccent,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(authProvider.error ?? 'Failed to upload cover photo. Please try again.'),
+              backgroundColor: Colors.redAccent,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isUploadingShopCover = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error selecting cover photo: $e'),
+            backgroundColor: Colors.redAccent,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
+  void _showCoverOptionsSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        padding: const EdgeInsets.all(24),
+        decoration: BoxDecoration(
+          color: context.cardBg,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+          border: Border.all(color: context.border, width: 1),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 38,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: context.textTertiary.withOpacity(0.3),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 18),
+            Text(
+              'Shop Cover Options',
+              style: GoogleFonts.inter(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: context.textPrimary,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Choose how you want to update your shop cover image',
+              style: GoogleFonts.inter(fontSize: 13, color: context.textSecondary),
+            ),
+            const SizedBox(height: 20),
+            ListTile(
+              leading: Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: _emeraldAccent.withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Icon(Icons.photo_library_rounded, color: _emeraldAccent),
+              ),
+              title: Text('Choose from Gallery', style: GoogleFonts.inter(fontWeight: FontWeight.w600, color: context.textPrimary)),
+              subtitle: Text('Pick a cover photo from your device', style: GoogleFonts.inter(fontSize: 12, color: context.textSecondary)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _pickAndUploadShopCover(ImageSource.gallery);
+              },
+            ),
+            const SizedBox(height: 8),
+            ListTile(
+              leading: Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.blueAccent.withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Icon(Icons.camera_alt_rounded, color: Colors.blueAccent),
+              ),
+              title: Text('Take Photo', style: GoogleFonts.inter(fontWeight: FontWeight.w600, color: context.textPrimary)),
+              subtitle: Text('Use camera to capture cover photo', style: GoogleFonts.inter(fontSize: 12, color: context.textSecondary)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _pickAndUploadShopCover(ImageSource.camera);
+              },
+            ),
+            const SizedBox(height: 12),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _showAvatarOptionsSheet() {
+    final user = context.read<AuthProvider>().user;
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
@@ -195,6 +332,25 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
                 _pickAndUploadAvatar(ImageSource.camera);
               },
             ),
+            if (user?.isSeller == true) ...[
+              const Divider(height: 24),
+              ListTile(
+                leading: Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: _gold.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Icon(Icons.add_photo_alternate_rounded, color: _gold),
+                ),
+                title: Text('Change Shop Cover Photo', style: GoogleFonts.inter(fontWeight: FontWeight.w600, color: context.textPrimary)),
+                subtitle: Text('Upload or change banner photo for your shop', style: GoogleFonts.inter(fontSize: 12, color: context.textSecondary)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showCoverOptionsSheet();
+                },
+              ),
+            ],
             const SizedBox(height: 12),
           ],
         ),
@@ -205,7 +361,8 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
   @override
   Widget build(BuildContext context) {
     final user = context.watch<AuthProvider>().user;
-    final avatarFullUrl = _getAvatarUrl(user?.avatarUrl ?? user?.shopImage);
+    final loc = context.watch<LocalizationProvider>();
+    final avatarFullUrl = _getAvatarUrl(user?.avatarUrl ?? (user?.isSeller == true ? null : user?.shopImage));
     final initials = (user?.name.isNotEmpty == true) ? user!.name.trim().substring(0, 1).toUpperCase() : 'P';
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
@@ -230,49 +387,110 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
             SliverToBoxAdapter(
               child: Stack(
                 children: [
-                  // Gradient Background Header
+                  // Shop Cover Image Background Header (Seller only) or Gradient Header
                   Container(
                     height: 380,
                     width: double.infinity,
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: [
-                          context.primary.withOpacity(0.9),
-                          context.primary.withOpacity(0.3),
-                          context.scaffoldBg,
-                        ],
-                        stops: const [0.0, 0.7, 1.0],
-                      ),
-                    ),
+                    child: user?.isSeller == true
+                        ? Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              if (user?.shopImage != null && user!.shopImage!.trim().isNotEmpty)
+                                ProductImage(
+                                  imageUrl: user.shopImage,
+                                  fit: BoxFit.cover,
+                                  width: double.infinity,
+                                  height: 380,
+                                  borderRadius: BorderRadius.zero,
+                                )
+                              else
+                                Container(
+                                  decoration: const BoxDecoration(
+                                    gradient: LinearGradient(
+                                      begin: Alignment.topLeft,
+                                      end: Alignment.bottomRight,
+                                      colors: [
+                                        Color(0xFF064E3B),
+                                        Color(0xFF047857),
+                                        Color(0xFF059669),
+                                      ],
+                                    ),
+                                  ),
+                                  child: Stack(
+                                    children: [
+                                      Positioned(
+                                        right: -20,
+                                        bottom: 20,
+                                        child: Icon(
+                                          Icons.storefront_rounded,
+                                          size: 200,
+                                          color: Colors.white.withOpacity(0.08),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              // Dark overlay for legibility of icons and text
+                              Container(
+                                decoration: BoxDecoration(
+                                  gradient: LinearGradient(
+                                    begin: Alignment.topCenter,
+                                    end: Alignment.bottomCenter,
+                                    colors: [
+                                      Colors.black.withOpacity(0.65),
+                                      Colors.black.withOpacity(0.35),
+                                      context.scaffoldBg.withOpacity(0.85),
+                                      context.scaffoldBg,
+                                    ],
+                                    stops: const [0.0, 0.45, 0.85, 1.0],
+                                  ),
+                                ),
+                              ),
+                            ],
+                          )
+                        : Container(
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                                colors: [
+                                  context.primary.withOpacity(0.9),
+                                  context.primary.withOpacity(0.3),
+                                  context.scaffoldBg,
+                                ],
+                                stops: const [0.0, 0.7, 1.0],
+                              ),
+                            ),
+                          ),
                   ),
 
-                  // Floating Ambient Circles
-                  Positioned(
-                    top: -40,
-                    right: -40,
-                    child: Container(
-                      width: 220,
-                      height: 220,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: _emeraldAccent.withOpacity(0.15),
+                  // Floating Ambient Circles (shown when no shop cover image)
+                  if (user?.isSeller != true || user?.shopImage == null || user!.shopImage!.trim().isEmpty) ...[
+                    Positioned(
+                      top: -40,
+                      right: -40,
+                      child: Container(
+                        width: 220,
+                        height: 220,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: _emeraldAccent.withOpacity(0.15),
+                        ),
                       ),
                     ),
-                  ),
-                  Positioned(
-                    top: 100,
-                    left: -50,
-                    child: Container(
-                      width: 180,
-                      height: 180,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: _gold.withOpacity(0.1),
+                    Positioned(
+                      top: 100,
+                      left: -50,
+                      child: Container(
+                        width: 180,
+                        height: 180,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: _gold.withOpacity(0.1),
+                        ),
                       ),
                     ),
-                  ),
+                  ],
 
                   SafeArea(
                     child: Column(
@@ -296,7 +514,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
                               ),
                               const Spacer(),
                               Text(
-                                'My Profile',
+                                loc.translate('my_profile'),
                                 style: GoogleFonts.inter(
                                   color: Colors.white,
                                   fontSize: 18,
@@ -305,7 +523,30 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
                                 ),
                               ),
                               const Spacer(),
+                              if (user?.isSeller == true) ...[
+                                IconButton(
+                                  tooltip: 'Change Shop Cover',
+                                  icon: Container(
+                                    padding: const EdgeInsets.all(8),
+                                    decoration: BoxDecoration(
+                                      color: Colors.black.withOpacity(0.4),
+                                      shape: BoxShape.circle,
+                                      border: Border.all(color: Colors.white.withOpacity(0.4)),
+                                    ),
+                                    child: _isUploadingShopCover
+                                        ? const SizedBox(
+                                            width: 18,
+                                            height: 18,
+                                            child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                                          )
+                                        : const Icon(Icons.add_a_photo_rounded, color: Colors.white, size: 18),
+                                  ),
+                                  onPressed: _showCoverOptionsSheet,
+                                ),
+                                const SizedBox(width: 4),
+                              ],
                               IconButton(
+                                tooltip: 'Edit Profile',
                                 icon: Container(
                                   padding: const EdgeInsets.all(8),
                                   decoration: BoxDecoration(
@@ -423,7 +664,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
 
                         // Name
                         Text(
-                          user?.name ?? 'Plant Enthusiast',
+                          user?.displayName ?? 'Plant Enthusiast',
                           style: GoogleFonts.inter(
                             color: context.textPrimary,
                             fontSize: 22,
@@ -494,7 +735,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
                                 ),
                                 const SizedBox(width: 6),
                                 Text(
-                                  user?.role ?? 'Customer',
+                                  loc.translate((user?.role ?? 'Customer').toLowerCase()),
                                   style: GoogleFonts.inter(
                                     color: _gold,
                                     fontSize: 12,
@@ -517,7 +758,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
-                child: _buildRoleStatCards(context, user)
+                child: _buildRoleStatCards(context, user, loc)
                     .animate()
                     .fadeIn(duration: 400.ms, delay: 200.ms)
                     .slideY(begin: 0.1),
@@ -532,7 +773,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'PERSONAL DETAILS',
+                      loc.translate('personal_details'),
                       style: GoogleFonts.inter(
                         fontSize: 11,
                         fontWeight: FontWeight.bold,
@@ -561,7 +802,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
                             icon: Icons.person_rounded,
                             iconBg: _emeraldAccent.withValues(alpha: 0.1),
                             iconColor: _emeraldAccent,
-                            label: 'Full Name',
+                            label: loc.translate('full_name'),
                             value: user?.name ?? 'Not set',
                           ),
                           Divider(height: 1, indent: 64, endIndent: 16, color: context.border.withValues(alpha: 0.5)),
@@ -571,10 +812,10 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
                               icon: Icons.storefront_rounded,
                               iconBg: Colors.teal.withValues(alpha: 0.1),
                               iconColor: Colors.teal,
-                              label: 'Shop Name',
+                              label: loc.translate('shop_name'),
                               value: (user?.businessName != null && user!.businessName!.trim().isNotEmpty)
                                   ? user.businessName!
-                                  : 'Not set (Tap edit to add)',
+                                  : 'Not set',
                             ),
                             Divider(height: 1, indent: 64, endIndent: 16, color: context.border.withValues(alpha: 0.5)),
                           ],
@@ -583,7 +824,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
                             icon: Icons.email_rounded,
                             iconBg: Colors.blueAccent.withValues(alpha: 0.1),
                             iconColor: Colors.blueAccent,
-                            label: 'Email Address',
+                            label: loc.translate('email_label'),
                             value: user?.email ?? 'Not set',
                           ),
                           Divider(height: 1, indent: 64, endIndent: 16, color: context.border.withValues(alpha: 0.5)),
@@ -592,10 +833,10 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
                             icon: Icons.phone_rounded,
                             iconBg: Colors.amber.withValues(alpha: 0.1),
                             iconColor: Colors.amber.shade800,
-                            label: 'Phone Number',
+                            label: loc.translate('phone_number'),
                             value: (user?.phone != null && user!.phone!.trim().isNotEmpty && user.phone != 'null')
                                 ? user.phone!
-                                : 'Not set (Tap edit to add)',
+                                : 'Not set',
                           ),
                           Divider(height: 1, indent: 64, endIndent: 16, color: context.border.withValues(alpha: 0.5)),
                           _buildDetailRow(
@@ -603,8 +844,8 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
                             icon: Icons.badge_rounded,
                             iconBg: Colors.purple.withValues(alpha: 0.1),
                             iconColor: Colors.purple,
-                            label: 'Account Role',
-                            value: user?.role ?? 'Customer',
+                            label: loc.translate('account_role'),
+                            value: loc.translate((user?.role ?? 'Customer').toLowerCase()),
                           ),
                         ],
                       ),
@@ -624,7 +865,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'APP & DASHBOARDS',
+                      loc.translate('app_and_dashboards'),
                       style: GoogleFonts.inter(
                         fontSize: 11,
                         fontWeight: FontWeight.bold,
@@ -653,8 +894,8 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
                               context,
                               icon: Icons.storefront_rounded,
                               iconColor: _emeraldAccent,
-                              title: 'Seller Dashboard',
-                              subtitle: 'Manage products & seller orders',
+                              title: loc.translate('seller_dashboard'),
+                              subtitle: loc.translate('manage_notifications_desc'),
                               onTap: () => Navigator.pushNamed(context, '/seller-dashboard'),
                             ),
                             Divider(height: 1, indent: 64, endIndent: 16, color: context.border.withOpacity(0.5)),
@@ -664,8 +905,8 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
                               context,
                               icon: Icons.local_shipping_rounded,
                               iconColor: Colors.deepOrangeAccent,
-                              title: 'Driver Navigation Hub',
-                              subtitle: 'Active deliveries & route optimization',
+                              title: loc.translate('driver_navigation_hub'),
+                              subtitle: loc.translate('active_deliveries_route'),
                               onTap: () => Navigator.pushNamed(context, '/driver-dashboard'),
                             ),
                             Divider(height: 1, indent: 64, endIndent: 16, color: context.border.withOpacity(0.5)),
@@ -674,8 +915,8 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
                             context,
                             icon: Icons.edit_note_rounded,
                             iconColor: Colors.indigoAccent,
-                            title: 'Edit Profile Information',
-                            subtitle: 'Update name, phone number, and avatar',
+                            title: loc.translate('edit_profile_info'),
+                            subtitle: loc.translate('update_profile_desc'),
                             onTap: () => Navigator.pushNamed(context, '/edit-profile'),
                           ),
                           Divider(height: 1, indent: 64, endIndent: 16, color: context.border.withOpacity(0.5)),
@@ -683,8 +924,8 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
                             context,
                             icon: Icons.notifications_none_rounded,
                             iconColor: Colors.amber.shade700,
-                            title: 'Notifications & Alerts',
-                            subtitle: 'Manage app notification preferences',
+                            title: loc.translate('notifications_and_alerts'),
+                            subtitle: loc.translate('manage_notifications_desc'),
                             onTap: () => Navigator.pushNamed(context, '/notifications'),
                           ),
                           Divider(height: 1, indent: 64, endIndent: 16, color: context.border.withOpacity(0.5)),
@@ -692,8 +933,8 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
                             context,
                             icon: Icons.language_rounded,
                             iconColor: Colors.teal,
-                            title: 'App Language',
-                            subtitle: 'Switch application language',
+                            title: loc.translate('app_language'),
+                            subtitle: loc.translate('switch_language_desc'),
                             onTap: () => Navigator.pushNamed(context, '/language'),
                           ),
                         ],
@@ -719,7 +960,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
                       child: ElevatedButton.icon(
                         icon: const Icon(Icons.logout_rounded, size: 20),
                         label: Text(
-                          'Sign Out',
+                          loc.translate('sign_out'),
                           style: GoogleFonts.inter(
                             fontSize: 15,
                             fontWeight: FontWeight.bold,
@@ -738,12 +979,12 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
                             builder: (ctx) => AlertDialog(
                               backgroundColor: context.cardBg,
                               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                              title: Text('Sign Out', style: GoogleFonts.inter(fontWeight: FontWeight.bold, color: context.textPrimary)),
-                              content: Text('Are you sure you want to log out of your Plantora account?', style: GoogleFonts.inter(color: context.textSecondary)),
+                              title: Text(loc.translate('sign_out'), style: GoogleFonts.inter(fontWeight: FontWeight.bold, color: context.textPrimary)),
+                              content: Text(loc.translate('sign_out_confirm'), style: GoogleFonts.inter(color: context.textSecondary)),
                               actions: [
                                 TextButton(
                                   onPressed: () => Navigator.pop(ctx),
-                                  child: Text('Cancel', style: GoogleFonts.inter(color: context.textSecondary)),
+                                  child: Text(loc.translate('cancel'), style: GoogleFonts.inter(color: context.textSecondary)),
                                 ),
                                 ElevatedButton(
                                   style: ElevatedButton.styleFrom(
@@ -758,7 +999,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
                                       Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
                                     }
                                   },
-                                  child: const Text('Sign Out'),
+                                  child: Text(loc.translate('sign_out')),
                                 ),
                               ],
                             ),
@@ -773,7 +1014,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
                     TextButton.icon(
                       icon: const Icon(Icons.delete_forever_rounded, size: 16, color: Colors.grey),
                       label: Text(
-                        'Delete Account',
+                        loc.translate('delete_account'),
                         style: GoogleFonts.inter(
                           fontSize: 13,
                           color: Colors.grey,
@@ -832,7 +1073,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
                                     ),
                                     const SizedBox(height: 18),
                                     Text(
-                                      'Delete Account?',
+                                      loc.translate('delete_account'),
                                       textAlign: TextAlign.center,
                                       style: GoogleFonts.outfit(
                                         fontWeight: FontWeight.w900,
@@ -909,7 +1150,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
                                                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                                               ),
                                               child: Text(
-                                                'Keep Account',
+                                                loc.translate('cancel'),
                                                 style: GoogleFonts.outfit(
                                                   fontWeight: FontWeight.w700,
                                                   fontSize: 14,
@@ -932,7 +1173,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
                                                 }
                                               },
                                               icon: const Icon(Icons.delete_outline_rounded, size: 18),
-                                              label: Text('Delete', style: GoogleFonts.outfit(fontWeight: FontWeight.w800, fontSize: 14)),
+                                              label: Text(loc.translate('delete'), style: GoogleFonts.outfit(fontWeight: FontWeight.w800, fontSize: 14)),
                                               style: ElevatedButton.styleFrom(
                                                 backgroundColor: const Color(0xFFEF4444),
                                                 foregroundColor: Colors.white,
@@ -985,7 +1226,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
     );
   }
 
-  Widget _buildRoleStatCards(BuildContext context, UserModel? user) {
+  Widget _buildRoleStatCards(BuildContext context, UserModel? user, LocalizationProvider loc) {
     if (user?.isDriver == true || user?.role.toLowerCase() == 'driver') {
       return Row(
         children: [
@@ -994,7 +1235,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
             icon: Icons.local_shipping_outlined,
             color: const Color(0xFF3B82F6),
             title: '142',
-            subtitle: 'Deliveries',
+            subtitle: loc.translate('deliveries'),
             onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DriverHistoryScreen())),
           ),
           const SizedBox(width: 8),
@@ -1003,7 +1244,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
             icon: Icons.star_rounded,
             color: const Color(0xFFF59E0B),
             title: '4.9 ★',
-            subtitle: 'Rating',
+            subtitle: loc.translate('ratings'),
             onTap: () {},
           ),
           const SizedBox(width: 8),
@@ -1012,7 +1253,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
             icon: Icons.account_balance_wallet_outlined,
             color: _gold,
             title: 'Rs. 45k',
-            subtitle: 'Earnings',
+            subtitle: loc.translate('earnings'),
             onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DriverPayoutScreen())),
           ),
           const SizedBox(width: 8),
@@ -1021,7 +1262,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
             icon: Icons.two_wheeler_rounded,
             color: _emeraldAccent,
             title: 'Active',
-            subtitle: 'Vehicle',
+            subtitle: loc.translate('vehicle'),
             onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DriverVehicleScreen())),
           ),
         ],
@@ -1034,7 +1275,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
             icon: Icons.inventory_2_outlined,
             color: const Color(0xFF3B82F6),
             title: '12',
-            subtitle: 'Listings',
+            subtitle: loc.translate('listings'),
             onTap: () => Navigator.pushNamed(context, '/seller-dashboard'),
           ),
           const SizedBox(width: 8),
@@ -1043,7 +1284,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
             icon: Icons.point_of_sale_rounded,
             color: _emeraldAccent,
             title: '48',
-            subtitle: 'Sales',
+            subtitle: loc.translate('sales'),
             onTap: () => Navigator.pushNamed(context, '/seller-dashboard'),
           ),
           const SizedBox(width: 8),
@@ -1052,7 +1293,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
             icon: Icons.account_balance_wallet_outlined,
             color: _gold,
             title: 'Rs. 85k',
-            subtitle: 'Earnings',
+            subtitle: loc.translate('earnings'),
             onTap: () => Navigator.pushNamed(context, '/seller-dashboard'),
           ),
           const SizedBox(width: 8),
@@ -1061,7 +1302,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
             icon: Icons.star_rounded,
             color: const Color(0xFFF59E0B),
             title: '4.9 ★',
-            subtitle: 'Rating',
+            subtitle: loc.translate('ratings'),
             onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ChatListScreen())),
           ),
         ],
@@ -1075,7 +1316,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
             icon: Icons.shopping_bag_outlined,
             color: const Color(0xFF3B82F6),
             title: '${user?.myOrders.length ?? 0}',
-            subtitle: 'My Orders',
+            subtitle: loc.translate('my_orders'),
             onTap: () => Navigator.pushNamed(context, '/orders'),
           ),
           const SizedBox(width: 8),
@@ -1083,8 +1324,8 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
             context,
             icon: Icons.military_tech_rounded,
             color: _gold,
-            title: '${user?.points ?? 250}',
-            subtitle: 'Points',
+            title: '${user?.points ?? 10}',
+            subtitle: loc.translate('pts'),
             onTap: () => Navigator.pushNamed(context, '/loyalty'),
           ),
           const SizedBox(width: 8),
@@ -1093,7 +1334,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
             icon: Icons.favorite_border_rounded,
             color: const Color(0xFFEF4444),
             title: '${user?.wishlist.length ?? 0}',
-            subtitle: 'Saved',
+            subtitle: loc.translate('favorites'),
             onTap: () => Navigator.pushNamed(context, '/favorites'),
           ),
           const SizedBox(width: 8),
@@ -1102,7 +1343,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
             icon: Icons.chat_bubble_outline_rounded,
             color: _emeraldAccent,
             title: 'Chat',
-            subtitle: 'Support',
+            subtitle: loc.translate('messages'),
             onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ChatListScreen())),
           ),
         ],

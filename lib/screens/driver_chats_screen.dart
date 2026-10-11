@@ -5,8 +5,9 @@ import 'package:provider/provider.dart';
 import '../theme/app_theme.dart';
 import '../providers/theme_provider.dart';
 import '../widgets/driver_drawer.dart';
-import 'driver_chat_detail_screen.dart';
-import '../services/driver_chat_service.dart';
+import '../models/order_model.dart';
+import '../services/order_service.dart';
+import 'driver_chat_screen.dart';
 
 class DriverChatsScreen extends StatefulWidget {
   final bool showMenuButton;
@@ -22,111 +23,68 @@ class _DriverChatsScreenState extends State<DriverChatsScreen>
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
   String _selectedFilter = 'All';
-  String? _selectedThreadId;
 
   // Driver's own chats — with Customers & Sellers
-  final List<Map<String, dynamic>> _customerChats = [
-    {
-      'id': 'cust_1',
-      'name': 'Amara Silva',
-      'role': 'Customer',
-      'lastMessage': 'How long until you arrive? My plant is waiting 🌿',
-      'time': '14:58',
-      'unread': 2,
-      'isOnline': true,
-      'orderId': 'ORD-9982',
-      'orderContext': 'Monstera Deliciosa',
-      'avatar': null,
-      'isRead': false,
-    },
-    {
-      'id': 'cust_2',
-      'name': 'Dinesh Wijeratne',
-      'role': 'Customer',
-      'lastMessage': 'Please leave it at the front gate.',
-      'time': '12:20',
-      'unread': 0,
-      'isOnline': false,
-      'orderId': 'ORD-9940',
-      'orderContext': 'Organic Pot Set',
-      'avatar': null,
-      'isRead': true,
-    },
-    {
-      'id': 'cust_3',
-      'name': 'Priya Jayawardena',
-      'role': 'Customer',
-      'lastMessage': 'Thank you! Got the package safely.',
-      'time': 'Yesterday',
-      'unread': 0,
-      'isOnline': false,
-      'orderId': 'ORD-8821',
-      'orderContext': 'Fiddle Leaf Fig',
-      'avatar': null,
-      'isRead': true,
-    },
-    {
-      'id': 'cust_4',
-      'name': 'Ruvini Perera',
-      'role': 'Customer',
-      'lastMessage': 'Is the delivery on the way?',
-      'time': '10:05',
-      'unread': 1,
-      'isOnline': true,
-      'orderId': 'ORD-0031',
-      'orderContext': 'Succulent Bundle',
-      'avatar': null,
-      'isRead': false,
-    },
-  ];
-
-  final List<Map<String, dynamic>> _sellerChats = [
-    {
-      'id': 'sell_1',
-      'name': 'Meesha Plant Nursery',
-      'role': 'Seller',
-      'lastMessage': 'Package is ready at the shop — come anytime after 2 PM.',
-      'time': '13:30',
-      'unread': 1,
-      'isOnline': true,
-      'orderId': 'ORD-9982',
-      'orderContext': 'Pickup Confirmation',
-      'avatar': null,
-      'isRead': false,
-    },
-    {
-      'id': 'sell_2',
-      'name': 'Green Terra Organics',
-      'role': 'Seller',
-      'lastMessage': 'Order is packed and ready. See you soon!',
-      'time': '11:15',
-      'unread': 0,
-      'isOnline': true,
-      'orderId': 'ORD-9940',
-      'orderContext': 'Pickup Ready',
-      'avatar': null,
-      'isRead': true,
-    },
-    {
-      'id': 'sell_3',
-      'name': 'Botanica LK',
-      'role': 'Seller',
-      'lastMessage': 'Confirmed! All 3 plants are wrapped and labelled.',
-      'time': 'Yesterday',
-      'unread': 0,
-      'isOnline': false,
-      'orderId': 'ORD-8821',
-      'orderContext': 'Fiddle Leaf Fig',
-      'avatar': null,
-      'isRead': true,
-    },
-  ];
+  final List<Map<String, dynamic>> _customerChats = [];
+  final List<Map<String, dynamic>> _sellerChats = [];
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
     _tabController.addListener(() => setState(() {}));
+    _loadLiveOrders();
+  }
+
+  Future<void> _loadLiveOrders() async {
+    try {
+      final orders = await OrderService().getMyDeliveries();
+      if (orders.isEmpty) {
+        final all = await OrderService().getOrders();
+        orders.addAll(all.where((o) => o.status == 'Out for Delivery' || o.status == 'Shipped' || o.status == 'Preparing'));
+      }
+      if (orders.isNotEmpty && mounted) {
+        setState(() {
+          for (final ord in orders) {
+            final custExists = _customerChats.any((c) => c['orderId'] == ord.id);
+            if (!custExists) {
+              _customerChats.insert(0, {
+                'id': ord.customerId.isNotEmpty ? ord.customerId : 'cust_${ord.id}',
+                'name': ord.customerName.isNotEmpty ? ord.customerName : 'Customer',
+                'role': 'Customer',
+                'lastMessage': 'Order #${ord.id.length > 6 ? ord.id.substring(0, 6) : ord.id} • ${ord.status}',
+                'time': 'Active',
+                'unread': 0,
+                'isOnline': true,
+                'orderId': ord.id,
+                'orderContext': ord.items.isNotEmpty ? ord.items.first.title : 'Order Items',
+                'avatar': ord.customerAvatar,
+                'isRead': true,
+                'order': ord,
+              });
+            }
+
+            final sellExists = _sellerChats.any((c) => c['orderId'] == ord.id);
+            if (!sellExists) {
+              _sellerChats.insert(0, {
+                'id': 'seller_${ord.id}',
+                'name': 'Green Haven Nursery',
+                'role': 'Seller',
+                'lastMessage': 'Order #${ord.id.length > 6 ? ord.id.substring(0, 6) : ord.id} ready for pickup',
+                'time': 'Active',
+                'unread': 0,
+                'isOnline': true,
+                'orderId': ord.id,
+                'orderContext': ord.items.isNotEmpty ? ord.items.first.title : 'Pickup Confirmation',
+                'avatar': null,
+                'isRead': true,
+                'order': ord,
+              });
+            }
+          }
+        });
+      }
+    } catch (_) {}
   }
 
   @override
@@ -652,17 +610,29 @@ class _DriverChatsScreenState extends State<DriverChatsScreen>
           child: InkWell(
             borderRadius: BorderRadius.circular(18),
             onTap: () {
-              // Open chat detail with the driver's chat service
+              // Open real live order chat with participants (Customer / Rider / Seller)
+              OrderModel targetOrder;
+              if (chat['order'] != null) {
+                targetOrder = chat['order'] as OrderModel;
+              } else {
+                targetOrder = OrderModel(
+                  id: chat['orderId']?.toString() ?? 'ORD-9982',
+                  customerId: chat['id']?.toString() ?? 'cust_1',
+                  customerName: chat['name']?.toString() ?? (role == 'Customer' ? 'Customer' : 'Store'),
+                  items: [],
+                  totalAmount: 1500,
+                  status: 'Out for Delivery',
+                  createdAt: DateTime.now(),
+                  shippingAddress: 'Colombo, Sri Lanka',
+                  phone: '+94 77 123 4567',
+                  driverId: 'driver',
+                  driverName: 'Driver',
+                );
+              }
               Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => ChangeNotifierProvider.value(
-                    value: DriverChatService(),
-                    child: DriverChatDetailScreen(
-                      threadId: chat['id'] as String,
-                      isEmbedded: false,
-                    ),
-                  ),
+                  builder: (_) => DriverChatScreen(order: targetOrder),
                 ),
               );
               // Mark as read

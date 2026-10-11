@@ -423,7 +423,7 @@ class _TermsOfServiceScreenState extends State<TermsOfServiceScreen> {
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          'legal@plantora.com',
+                          'supportplantora@gmail.com',
                           style: GoogleFonts.inter(
                             fontSize: 13,
                             fontWeight: FontWeight.w700,
@@ -439,7 +439,7 @@ class _TermsOfServiceScreenState extends State<TermsOfServiceScreen> {
               const SizedBox(width: 10),
               ElevatedButton.icon(
                 onPressed: () {
-                  Clipboard.setData(const ClipboardData(text: 'legal@plantora.com'));
+                  Clipboard.setData(const ClipboardData(text: 'supportplantora@gmail.com'));
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: const Text('Legal email copied to clipboard!'),

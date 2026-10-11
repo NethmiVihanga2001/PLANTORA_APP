@@ -474,7 +474,7 @@ class InviteFriendScreen extends StatelessWidget {
                     const SizedBox(height: 16),
                     _buildInviteRow(
                       context: context,
-                      name: 'Sarah Miller',
+                      name: 'Nimthara Keshani',
                       status: '+500 PTS',
                       time: 'Yesterday',
                       isCompleted: true,
@@ -483,7 +483,7 @@ class InviteFriendScreen extends StatelessWidget {
                     const Divider(height: 20),
                     _buildInviteRow(
                       context: context,
-                      name: 'David Kim',
+                      name: 'Dasuni Dananjali',
                       status: '+500 PTS',
                       time: '3 days ago',
                       isCompleted: true,
@@ -492,7 +492,7 @@ class InviteFriendScreen extends StatelessWidget {
                     const Divider(height: 20),
                     _buildInviteRow(
                       context: context,
-                      name: 'Elena Rostova',
+                      name: 'Rsindu Gimhana',
                       status: 'Pending',
                       time: 'Invited 5 days ago',
                       isCompleted: false,

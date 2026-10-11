@@ -13,6 +13,8 @@ import '../models/order_model.dart';
 import '../providers/notification_provider.dart';
 import 'driver_chat_screen.dart';
 import '../config/app_config.dart';
+import '../services/socket_service.dart';
+import '../services/delivery_service.dart';
 
 class OrderTrackingScreen extends StatefulWidget {
   final OrderModel order;
@@ -28,45 +30,59 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
   late IO.Socket _socket;
   final MapController _mapController = MapController();
   
-  // Real-time coordinates for live tracking demo in Colombo
+  // Real-time coordinates in Colombo
   final LatLng _shopLocation = const LatLng(6.8720, 79.8860); // Plantora Shop (Maharagama)
   final LatLng _customerLocation = const LatLng(6.9271, 79.8612); // Customer House (Colombo Fort)
-  LatLng _driverLocation = const LatLng(6.8890, 79.8720); // Initial Driver position
+  LatLng _driverLocation = const LatLng(6.8890, 79.8720); // Driver position
+  double _driverHeading = 0.0;
 
-  Timer? _simulationTimer;
+  List<LatLng> _roadPoints = [];
+  final List<LatLng> _traveledBreadcrumbs = [];
+
   bool _hasNotifiedNearby = false;
 
   @override
   void initState() {
     super.initState();
     _currentOrder = widget.order;
+    _fetchRoadRoute();
     _initSocket();
-    _startDriverSimulation();
   }
 
-  void _startDriverSimulation() {
-    _simulationTimer?.cancel();
-    _simulationTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
-      if (!mounted) return;
-      final distanceMeters = const Distance().as(LengthUnit.Meter, _driverLocation, _customerLocation);
-      
-      if (distanceMeters < 50) {
-        _simulationTimer?.cancel();
-        _checkProximityAlert(0);
-        return;
-      }
-
-      // Smooth step towards customer location
-      final nextLat = _driverLocation.latitude + (_customerLocation.latitude - _driverLocation.latitude) * 0.12;
-      final nextLng = _driverLocation.longitude + (_customerLocation.longitude - _driverLocation.longitude) * 0.12;
-      
+  Future<void> _fetchRoadRoute() async {
+    // 1. Fetch real street road geometry from OSRM
+    final points = await DeliveryService.fetchRoadRoute(_shopLocation, _customerLocation);
+    if (mounted) {
       setState(() {
-        _driverLocation = LatLng(nextLat, nextLng);
+        _roadPoints = points;
       });
+      if (_roadPoints.isNotEmpty) {
+        _recenterMap();
+      }
+    }
 
-      _checkProximityAlert(distanceMeters.toInt());
-    });
+    // 2. Fetch existing active location & breadcrumbs from backend
+    final activeLoc = await DeliveryService().getActiveDeliveryLocation(_currentOrder.id);
+    if (activeLoc != null && mounted) {
+      final lat = (activeLoc['lat'] as num?)?.toDouble();
+      final lng = (activeLoc['lng'] as num?)?.toDouble();
+      if (lat != null && lng != null) {
+        setState(() {
+          _driverLocation = LatLng(lat, lng);
+          _driverHeading = (activeLoc['heading'] as num?)?.toDouble() ?? 0.0;
+          if (activeLoc['path'] is List) {
+            _traveledBreadcrumbs.clear();
+            for (final p in activeLoc['path']) {
+              if (p is Map && p['lat'] != null && p['lng'] != null) {
+                _traveledBreadcrumbs.add(LatLng((p['lat'] as num).toDouble(), (p['lng'] as num).toDouble()));
+              }
+            }
+          }
+        });
+      }
+    }
   }
+
 
   void _checkProximityAlert(int distanceMeters) {
     if (distanceMeters <= 500 && !_hasNotifiedNearby) {
@@ -77,7 +93,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
         final notifications = Provider.of<NotificationProvider>(context, listen: false);
         notifications.addNotification(
           '🚨 Rider is Nearby!',
-          'Your delivery driver ${_currentOrder.driverName ?? "Sahan Perera"} is arriving at your location (${distanceMeters}m away)!',
+          'Your delivery driver ${_currentOrder.driverName ?? "Rider"} is arriving at your location (${distanceMeters}m away)!',
           type: 'delivery',
         );
       } catch (e) {
@@ -155,11 +171,11 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          _currentOrder.driverName ?? 'Sahan Perera',
+                          _currentOrder.driverName ?? 'Assigned Rider',
                           style: GoogleFonts.inter(fontWeight: FontWeight.bold, fontSize: 14, color: context.textPrimary),
                         ),
                         Text(
-                          '${_currentOrder.vehicleType ?? "Honda Scooter"} • ${_currentOrder.vehiclePlate ?? "WP CBB-4821"}',
+                          '${_currentOrder.vehicleType ?? "Motorcycle"} ${_currentOrder.vehiclePlate != null ? "• ${_currentOrder.vehiclePlate}" : ""}',
                           style: GoogleFonts.inter(fontSize: 11.5, color: context.textSecondary),
                         ),
                       ],
@@ -187,8 +203,11 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
   }
 
   void _initSocket() {
+    SocketService().joinOrderRoom(_currentOrder.id);
+
     _socket = IO.io(AppConfig.baseUrl, <String, dynamic>{
-      'transports': ['websocket'],
+      'transports': ['websocket', 'polling'],
+      'extraHeaders': AppConfig.defaultHeaders,
       'autoConnect': false,
     });
     
@@ -197,48 +216,86 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
     _socket.onConnect((_) {
       _socket.emit('joinOrderRoom', _currentOrder.id);
     });
+
+    _socket.on('rider_arriving_near', (data) {
+      if (mounted) {
+        final meters = (data['distanceMeters'] as num?)?.toInt() ?? 300;
+        _checkProximityAlert(meters);
+      }
+    });
+
+    _socket.on('order_status_updated', (data) {
+      if (mounted && data != null && data['orderId'] != null && data['orderId'].toString() == _currentOrder.id.toString()) {
+        setState(() {
+          _currentOrder = _currentOrder.copyWith(
+            status: data['status'] ?? _currentOrder.status,
+            driverName: data['driverName'] ?? _currentOrder.driverName,
+            driverPhone: data['driverPhone'] ?? _currentOrder.driverPhone,
+            vehicleType: data['vehicleType'] ?? _currentOrder.vehicleType,
+            vehiclePlate: data['vehiclePlate'] ?? _currentOrder.vehiclePlate,
+          );
+        });
+      }
+    });
     
     _socket.on('order_status_${_currentOrder.customerId}', (data) {
-      if (mounted && data['orderId'] == _currentOrder.id) {
+      if (mounted && data != null && data['orderId'] != null && data['orderId'].toString() == _currentOrder.id.toString()) {
         setState(() {
-          _currentOrder = OrderModel(
-            id: _currentOrder.id,
-            customerId: _currentOrder.customerId,
-            customerName: _currentOrder.customerName,
-            items: _currentOrder.items,
-            totalAmount: _currentOrder.totalAmount,
+          _currentOrder = _currentOrder.copyWith(
             status: data['status'] ?? _currentOrder.status,
-            createdAt: _currentOrder.createdAt,
-            shippingAddress: _currentOrder.shippingAddress,
-            phone: _currentOrder.phone,
-            driverId: _currentOrder.driverId,
             driverName: data['driverName'] ?? _currentOrder.driverName,
-            driverAvatar: data['driverAvatar'] ?? _currentOrder.driverAvatar,
-            vehicleType: _currentOrder.vehicleType,
-            vehiclePlate: _currentOrder.vehiclePlate,
           );
         });
       }
     });
     
     _socket.on('locationUpdated', (data) {
-      if (mounted) {
-        setState(() {
-          _driverLocation = LatLng(data['lat'], data['lng']);
-        });
-        
-        final bounds = LatLngBounds.fromPoints([_customerLocation, _driverLocation]);
-        _mapController.fitCamera(CameraFit.bounds(bounds: bounds, padding: const EdgeInsets.all(40)));
+      if (mounted && data != null && data['orderId'] != null && data['orderId'].toString() == _currentOrder.id.toString()) {
+        if (data['lat'] != null && data['lng'] != null) {
+          final lat = (data['lat'] as num).toDouble();
+          final lng = (data['lng'] as num).toDouble();
+          final heading = (data['heading'] as num?)?.toDouble() ?? 0.0;
+          final newLoc = LatLng(lat, lng);
+
+          setState(() {
+            _driverLocation = newLoc;
+            _driverHeading = heading;
+            if (data['path'] is List) {
+              _traveledBreadcrumbs.clear();
+              for (final p in data['path']) {
+                if (p is Map && p['lat'] != null && p['lng'] != null) {
+                  _traveledBreadcrumbs.add(LatLng((p['lat'] as num).toDouble(), (p['lng'] as num).toDouble()));
+                }
+              }
+            } else {
+              if (_traveledBreadcrumbs.isEmpty || const Distance().as(LengthUnit.Meter, _traveledBreadcrumbs.last, newLoc) >= 3) {
+                _traveledBreadcrumbs.add(newLoc);
+              }
+            }
+          });
+
+          final distanceMeters = (data['distanceToCustomer'] as num?)?.toInt() ?? 
+              const Distance().as(LengthUnit.Meter, _driverLocation, _customerLocation).toInt();
+          if (distanceMeters <= 500) {
+            _checkProximityAlert(distanceMeters);
+          }
+          
+          if (_currentOrder.orderStatus == OrderStatus.outForDelivery) {
+            final bounds = LatLngBounds.fromPoints([_customerLocation, _driverLocation]);
+            _mapController.fitCamera(CameraFit.bounds(bounds: bounds, padding: const EdgeInsets.all(50)));
+          }
+        }
       }
     });
   }
 
   @override
   void dispose() {
-    _simulationTimer?.cancel();
+    SocketService().leaveOrderRoom(_currentOrder.id);
     _socket.disconnect();
     super.dispose();
   }
+
 
   void _recenterMap() {
     final bounds = LatLngBounds.fromPoints([_shopLocation, _driverLocation, _customerLocation]);
@@ -248,9 +305,6 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
   @override
   Widget build(BuildContext context) {
     final status = _currentOrder.orderStatus;
-    final distanceMeters = const Distance().as(LengthUnit.Meter, _driverLocation, _customerLocation);
-    final distanceKm = (distanceMeters / 1000).toStringAsFixed(1);
-    final estimatedMins = (distanceMeters / 250).ceil();
     final screenHeight = MediaQuery.of(context).size.height;
     final bottomSheetHeight = screenHeight * 0.54;
 
@@ -306,7 +360,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                         ).animate(onPlay: (c) => c.repeat(reverse: true)).fade(begin: 0.3, end: 1.0),
                         const SizedBox(width: 8),
                         Text(
-                          distanceMeters > 0 ? '$estimatedMins mins away ($distanceKm km)' : 'Rider Arrived!',
+                          _telemetryText,
                           style: GoogleFonts.inter(
                             fontWeight: FontWeight.w800,
                             fontSize: 12.5,
@@ -363,7 +417,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                       ),
                     ),
 
-                    // ETA Header Banner (Fixed 490px overflow by wrapping Column in Expanded)
+                    // ETA Header Banner
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
                       child: Row(
@@ -373,7 +427,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text(
-                                  distanceMeters <= 50 ? 'Driver Has Arrived!' : 'Arriving in $estimatedMins Mins',
+                                  _headerTitle,
                                   style: GoogleFonts.outfit(
                                     fontSize: 20,
                                     fontWeight: FontWeight.bold,
@@ -451,15 +505,61 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
     );
   }
 
+  String get _telemetryText {
+    final status = _currentOrder.orderStatus;
+    switch (status) {
+      case OrderStatus.pending:
+        return 'Order Placed • Waiting for Seller';
+      case OrderStatus.accepted:
+      case OrderStatus.preparing:
+        return 'Seller Preparing Plants';
+      case OrderStatus.shipped:
+        return 'Ready for Pickup • Assigning Rider';
+      case OrderStatus.outForDelivery:
+        final distanceMeters = const Distance().as(LengthUnit.Meter, _driverLocation, _customerLocation);
+        final distanceKm = (distanceMeters / 1000).toStringAsFixed(1);
+        final estimatedMins = (distanceMeters / 250).ceil();
+        return distanceMeters > 50 ? '$estimatedMins mins away ($distanceKm km)' : 'Rider Arrived!';
+      case OrderStatus.delivered:
+        return 'Order Delivered Successfully!';
+      case OrderStatus.cancelled:
+        return 'Order Cancelled';
+    }
+  }
+
+  String get _headerTitle {
+    final status = _currentOrder.orderStatus;
+    switch (status) {
+      case OrderStatus.pending:
+        return 'Order Placed';
+      case OrderStatus.accepted:
+        return 'Accepted by Seller';
+      case OrderStatus.preparing:
+        return 'Preparing your Plants';
+      case OrderStatus.shipped:
+        return 'Waiting for Delivery Rider';
+      case OrderStatus.outForDelivery:
+        final distanceMeters = const Distance().as(LengthUnit.Meter, _driverLocation, _customerLocation);
+        final estimatedMins = (distanceMeters / 250).ceil();
+        return distanceMeters <= 50 ? 'Driver Has Arrived!' : 'Arriving in $estimatedMins Mins';
+      case OrderStatus.delivered:
+        return 'Order Delivered!';
+      case OrderStatus.cancelled:
+        return 'Order Cancelled';
+    }
+  }
+
   Widget _buildFullBleedMap() {
-    final fullPath = [_shopLocation, _driverLocation, _customerLocation];
-    final remainingPath = [_driverLocation, _customerLocation];
+    final hasActiveRider = (_currentOrder.orderStatus == OrderStatus.outForDelivery || _currentOrder.orderStatus == OrderStatus.delivered) &&
+        (_currentOrder.driverName != null && _currentOrder.driverName!.trim().isNotEmpty);
+
+    final road = _roadPoints.isNotEmpty ? _roadPoints : [_shopLocation, _customerLocation];
 
     return FlutterMap(
       mapController: _mapController,
       options: MapOptions(
         initialCameraFit: CameraFit.bounds(
-          bounds: LatLngBounds.fromPoints(fullPath),
+          bounds: LatLngBounds.fromPoints(road),
           padding: const EdgeInsets.fromLTRB(50, 80, 50, 270),
         ),
       ),
@@ -469,19 +569,24 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
           subdomains: const ['mt0', 'mt1', 'mt2', 'mt3'],
           userAgentPackageName: 'com.plantora.app',
         ),
-        // Driver Route Polyline Path
+        // Real Road & Traveled Breadcrumbs Polylines
         PolylineLayer(
           polylines: [
+            // Planned street road route
             Polyline(
-              points: fullPath,
-              strokeWidth: 6,
-              color: const Color(0xFF10B981).withValues(alpha: 0.3),
+              points: road,
+              strokeWidth: 5.5,
+              color: const Color(0xFF10B981).withValues(alpha: hasActiveRider ? 0.35 : 0.6),
             ),
-            Polyline(
-              points: remainingPath,
-              strokeWidth: 4.5,
-              color: const Color(0xFF10B981),
-            ),
+            // Real driver breadcrumbs path traveled
+            if (_traveledBreadcrumbs.length >= 2)
+              Polyline(
+                points: _traveledBreadcrumbs,
+                strokeWidth: 6.0,
+                color: const Color(0xFF10B981),
+                strokeCap: StrokeCap.round,
+                strokeJoin: StrokeJoin.round,
+              ),
           ],
         ),
         MarkerLayer(
@@ -518,51 +623,60 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                 child: const Icon(Icons.home_work_rounded, color: Color(0xFF10B981), size: 22),
               ),
             ),
-            Marker(
-              point: _driverLocation,
-              width: 54,
-              height: 54,
-              child: Stack(
-                alignment: Alignment.center,
-                children: [
-                  Container(
-                    width: 48,
-                    height: 48,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF10B981).withValues(alpha: 0.25),
-                      shape: BoxShape.circle,
-                    ),
-                  ).animate(onPlay: (controller) => controller.repeat(reverse: true))
-                   .scale(begin: const Offset(0.9, 0.9), end: const Offset(1.25, 1.25), duration: 1200.ms),
-                  Container(
-                    width: 42,
-                    height: 42,
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      shape: BoxShape.circle,
-                      border: Border.all(color: const Color(0xFF10B981), width: 2.5),
-                      boxShadow: [
-                        BoxShadow(color: Colors.black.withValues(alpha: 0.3), blurRadius: 12),
-                      ],
-                    ),
-                    child: const Center(
-                      child: Text('🛵', style: TextStyle(fontSize: 22)),
-                    ),
+            if (hasActiveRider)
+              Marker(
+                point: _driverLocation,
+                width: 56,
+                height: 56,
+                child: Transform.rotate(
+                  angle: _driverHeading * (3.141592653589793 / 180),
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      Container(
+                        width: 48,
+                        height: 48,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF10B981).withValues(alpha: 0.25),
+                          shape: BoxShape.circle,
+                        ),
+                      ).animate(onPlay: (controller) => controller.repeat(reverse: true))
+                       .scale(begin: const Offset(0.9, 0.9), end: const Offset(1.25, 1.25), duration: 1200.ms),
+                      Container(
+                        width: 42,
+                        height: 42,
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: const Color(0xFF10B981), width: 2.5),
+                          boxShadow: [
+                            BoxShadow(color: Colors.black.withValues(alpha: 0.3), blurRadius: 12),
+                          ],
+                        ),
+                        child: const Center(
+                          child: Text('🛵', style: TextStyle(fontSize: 22)),
+                        ),
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
-            ),
           ],
         ),
       ],
     );
   }
 
-  // Unified Driver Profile Section (No Heavy Outer Box)
+  // Unified Driver Profile Section
   Widget _buildDriverSection() {
-    final driverName = _currentOrder.driverName ?? 'Sahan Perera';
-    final vehicle = _currentOrder.vehicleType ?? 'Honda Scooter';
-    final plate = _currentOrder.vehiclePlate ?? 'WP CBB-4821';
+    final hasDriver = (_currentOrder.orderStatus == OrderStatus.outForDelivery || _currentOrder.orderStatus == OrderStatus.delivered) &&
+        (_currentOrder.driverName != null && _currentOrder.driverName!.trim().isNotEmpty);
+
+    final driverName = hasDriver
+        ? _currentOrder.driverName!
+        : (_currentOrder.orderStatus == OrderStatus.shipped ? 'Assigning Rider...' : 'Seller Preparing Plant');
+    final vehicle = hasDriver ? (_currentOrder.vehicleType ?? 'Motorcycle') : 'Awaiting delivery partner';
+    final plate = hasDriver ? (_currentOrder.vehiclePlate ?? '') : '';
 
     return Row(
       children: [
@@ -570,23 +684,26 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
           children: [
             CircleAvatar(
               radius: 24,
-              backgroundImage: _currentOrder.driverAvatar != null ? NetworkImage(_currentOrder.driverAvatar!) : null,
+              backgroundImage: (hasDriver && _currentOrder.driverAvatar != null && _currentOrder.driverAvatar!.isNotEmpty) ? NetworkImage(_currentOrder.driverAvatar!) : null,
               backgroundColor: const Color(0xFF10B981).withValues(alpha: 0.15),
-              child: _currentOrder.driverAvatar == null ? const Icon(Icons.person_rounded, color: Color(0xFF10B981), size: 26) : null,
+              child: (!hasDriver || _currentOrder.driverAvatar == null)
+                  ? Icon(hasDriver ? Icons.person_rounded : Icons.storefront_rounded, color: const Color(0xFF10B981), size: 26)
+                  : null,
             ),
-            Positioned(
-              bottom: 0,
-              right: 0,
-              child: Container(
-                width: 12,
-                height: 12,
-                decoration: BoxDecoration(
-                  color: const Color(0xFF10B981),
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white, width: 2),
+            if (hasDriver)
+              Positioned(
+                bottom: 0,
+                right: 0,
+                child: Container(
+                  width: 12,
+                  height: 12,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF10B981),
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 2),
+                  ),
                 ),
               ),
-            ),
           ],
         ),
         const SizedBox(width: 12),
@@ -604,13 +721,15 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
-                  const SizedBox(width: 4),
-                  const Icon(Icons.verified_rounded, color: Color(0xFF10B981), size: 16),
+                  if (hasDriver) ...[
+                    const SizedBox(width: 4),
+                    const Icon(Icons.verified_rounded, color: Color(0xFF10B981), size: 16),
+                  ],
                 ],
               ),
               const SizedBox(height: 2),
               Text(
-                '$vehicle • $plate',
+                plate.isNotEmpty ? '$vehicle • $plate' : vehicle,
                 style: GoogleFonts.inter(color: context.textSecondary, fontSize: 12, fontWeight: FontWeight.w500),
                 overflow: TextOverflow.ellipsis,
               ),
@@ -619,50 +738,49 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
         ),
         const SizedBox(width: 8),
 
-        // Sleek Modern Call & Message Buttons
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Message Action Button
-            IconButton(
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => DriverChatScreen(order: _currentOrder)),
-                );
-              },
-              icon: const Icon(Icons.message_rounded, color: Color(0xFF10B981), size: 20),
-              style: IconButton.styleFrom(
-                backgroundColor: const Color(0xFF10B981).withValues(alpha: 0.12),
-                minimumSize: const Size(44, 44),
-                shape: const CircleBorder(),
+        if (hasDriver)
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton(
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => DriverChatScreen(order: _currentOrder)),
+                  );
+                },
+                icon: const Icon(Icons.message_rounded, color: Color(0xFF10B981), size: 20),
+                style: IconButton.styleFrom(
+                  backgroundColor: const Color(0xFF10B981).withValues(alpha: 0.12),
+                  minimumSize: const Size(44, 44),
+                  shape: const CircleBorder(),
+                ),
+                tooltip: 'Chat with Driver',
               ),
-              tooltip: 'Chat with Driver',
-            ),
-            const SizedBox(width: 8),
-            // Call Action Button
-            IconButton(
-              onPressed: () async {
-                final phone = _currentOrder.driverPhone ?? '+94771234567';
-                final url = Uri.parse('tel:$phone');
-                if (await canLaunchUrl(url)) {
-                  await launchUrl(url);
-                }
-              },
-              icon: const Icon(Icons.phone_in_talk_rounded, color: Colors.white, size: 20),
-              style: IconButton.styleFrom(
-                backgroundColor: const Color(0xFF10B981),
-                minimumSize: const Size(44, 44),
-                shape: const CircleBorder(),
-                elevation: 2,
+              const SizedBox(width: 8),
+              IconButton(
+                onPressed: () async {
+                  final phone = _currentOrder.driverPhone ?? '+94771234567';
+                  final url = Uri.parse('tel:$phone');
+                  if (await canLaunchUrl(url)) {
+                    await launchUrl(url);
+                  }
+                },
+                icon: const Icon(Icons.phone_in_talk_rounded, color: Colors.white, size: 20),
+                style: IconButton.styleFrom(
+                  backgroundColor: const Color(0xFF10B981),
+                  minimumSize: const Size(44, 44),
+                  shape: const CircleBorder(),
+                  elevation: 2,
+                ),
+                tooltip: 'Call Driver',
               ),
-              tooltip: 'Call Driver',
-            ),
-          ],
-        ),
+            ],
+          ),
       ],
     ).animate().fadeIn().slideY(begin: 0.08);
   }
+
 
   // Unified Timeline Section (No Heavy Outer Box)
   Widget _buildStatusTimelineSection(OrderStatus currentStatus) {

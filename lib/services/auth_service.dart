@@ -25,7 +25,7 @@ class AuthService {
     try {
       final response = await http.post(
         Uri.parse('$_baseUrl/auth/register'),
-        headers: {'Content-Type': 'application/json'},
+        headers: AppConfig.headers({'Content-Type': 'application/json'}),
         body: jsonEncode({
           'name': name,
           'email': email,
@@ -36,19 +36,25 @@ class AuthService {
           'businessName': businessName,
           'vehicleType': vehicleType,
         }),
-      ).timeout(const Duration(seconds: 2));
+      ).timeout(const Duration(seconds: 15));
 
       final data = jsonDecode(response.body);
       if (response.statusCode == 200 && data != null && data['user'] != null) {
+        _memoryToken = data['token'];
+        _memoryUser = jsonEncode(data['user']);
+        
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString(_tokenKey, data['token'] ?? 'token_reg');
         await prefs.setString(_currentUserKey, jsonEncode(data['user']));
         return {'success': true, 'user': UserModel.fromMap(data['user'])};
+      } else if (data != null && data['error'] != null) {
+        return {'success': false, 'error': data['error']};
       }
     } catch (e) {
-      print('AuthService register offline/viva fallback mode: $e');
+      print('AuthService register network attempt failed: $e');
     }
 
+    // Offline fallback ONLY if network failed
     final role = isSeller ? 'Seller' : (isDriver ? 'Driver' : 'Customer');
     final offlineUser = UserModel(
       id: 'viva_reg_${DateTime.now().millisecondsSinceEpoch}',
@@ -56,10 +62,10 @@ class AuthService {
       email: email.isNotEmpty ? email : 'user@plantora.app',
       phone: phone,
       role: role,
-      points: 500,
+      points: 10,
       businessName: businessName ?? (isSeller ? 'My Plant Nursery' : null),
       vehicleType: vehicleType ?? (isDriver ? 'Motorbike' : null),
-      avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb',
+      avatarUrl: null,
       joinedAt: DateTime.now(),
     );
 
@@ -83,7 +89,7 @@ class AuthService {
     try {
       final response = await http.post(
         Uri.parse('$_baseUrl/auth/social-login'),
-        headers: {'Content-Type': 'application/json'},
+        headers: AppConfig.headers({'Content-Type': 'application/json'}),
         body: jsonEncode({
           'provider': provider,
           'email': email,
@@ -91,7 +97,7 @@ class AuthService {
           'id': id,
           if (role != null) 'role': role,
         }),
-      ).timeout(const Duration(seconds: 2));
+      ).timeout(const Duration(seconds: 15));
 
       final data = jsonDecode(response.body);
       if (response.statusCode == 200 && data != null && data['user'] != null) {
@@ -103,6 +109,9 @@ class AuthService {
           };
         }
 
+        _memoryToken = data['token'];
+        _memoryUser = jsonEncode(data['user']);
+
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString(_tokenKey, data['token']);
         await prefs.setString(_currentUserKey, jsonEncode(data['user']));
@@ -111,9 +120,11 @@ class AuthService {
           'requires2fa': false, 
           'user': UserModel.fromMap(data['user'])
         };
+      } else if (data != null && data['error'] != null) {
+        return {'success': false, 'error': data['error']};
       }
     } catch (e) {
-      print('AuthService socialLogin offline/viva fallback mode: $e');
+      print('AuthService socialLogin network error: $e');
     }
 
     final userRole = role ?? (email.toLowerCase().contains('seller') ? 'Seller' : (email.toLowerCase().contains('driver') ? 'Driver' : 'Customer'));
@@ -122,8 +133,8 @@ class AuthService {
       name: name.isNotEmpty ? name : 'Google User',
       email: email.isNotEmpty ? email : 'user@plantora.app',
       role: userRole,
-      points: 1000,
-      avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb',
+      points: userRole == 'Customer' ? 10 : 1000,
+      avatarUrl: null,
       joinedAt: DateTime.now(),
     );
 
@@ -144,14 +155,19 @@ class AuthService {
   Future<Map<String, dynamic>> login({
     required String email,
     required String password,
+    String? role,
     bool rememberMe = false,
   }) async {
     try {
       final response = await http.post(
         Uri.parse('$_baseUrl/auth/login'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'email': email, 'password': password}),
-      ).timeout(const Duration(seconds: 2));
+        headers: AppConfig.headers({'Content-Type': 'application/json'}),
+        body: jsonEncode({
+          'email': email, 
+          'password': password,
+          if (role != null) 'role': role,
+        }),
+      ).timeout(const Duration(seconds: 15));
 
       final data = jsonDecode(response.body);
       if (response.statusCode == 200 && data != null && data['user'] != null) {
@@ -175,50 +191,26 @@ class AuthService {
           'requires2fa': false, 
           'user': UserModel.fromMap(data['user'])
         };
+      } else if (data != null && data['error'] != null) {
+        return {
+          'success': false, 
+          'error': data['error'],
+          'message': data['error'],
+        };
       }
     } catch (e) {
-      print('AuthService login offline/viva fallback mode: $e');
+      print('AuthService login network error: $e');
+      return {
+        'success': false,
+        'error': 'Failed to connect to server. Please check your internet connection.',
+        'message': 'Failed to connect to server. Please check your internet connection.',
+      };
     }
-
-    final emailLower = email.toLowerCase();
-    String role = 'Customer';
-    String name = email.contains('@') ? email.split('@')[0] : 'Plantora User';
-    if (name.isNotEmpty) {
-      name = name[0].toUpperCase() + name.substring(1);
-    }
-
-    if (emailLower.contains('seller') || emailLower.contains('store') || emailLower.contains('vendor')) {
-      role = 'Seller';
-    } else if (emailLower.contains('driver') || emailLower.contains('rider') || emailLower.contains('delivery')) {
-      role = 'Driver';
-    }
-
-    final offlineUser = UserModel(
-      id: 'viva_offline_${DateTime.now().millisecondsSinceEpoch}',
-      name: name,
-      email: email.isNotEmpty ? email : 'demo@plantora.app',
-      role: role,
-      points: 1500,
-      businessName: role == 'Seller' ? 'Green Canopy Plant Nursery' : null,
-      avatarUrl: role == 'Seller' 
-          ? 'https://images.unsplash.com/photo-1534528741775-53994a69daeb'
-          : (role == 'Driver' 
-              ? 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d'
-              : 'https://images.unsplash.com/photo-1494790108377-be9c29b29330'),
-      joinedAt: DateTime.now(),
-    );
-
-    _memoryToken = 'viva_mock_token_${DateTime.now().millisecondsSinceEpoch}';
-    _memoryUser = jsonEncode(offlineUser.toMap());
-
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_tokenKey, _memoryToken!);
-    await prefs.setString(_currentUserKey, _memoryUser!);
 
     return {
-      'success': true,
-      'requires2fa': false,
-      'user': offlineUser,
+      'success': false,
+      'error': 'Login failed. Please check your email and password.',
+      'message': 'Login failed. Please check your email and password.',
     };
   }
 
@@ -226,12 +218,14 @@ class AuthService {
     try {
       final response = await http.post(
         Uri.parse('$_baseUrl/auth/verify-2fa'),
-        headers: {'Content-Type': 'application/json'},
+        headers: AppConfig.headers({'Content-Type': 'application/json'}),
         body: jsonEncode({'userId': userId, 'code': code}),
-      ).timeout(const Duration(seconds: 3));
+      ).timeout(const Duration(seconds: 15));
 
       final data = jsonDecode(response.body);
       if (response.statusCode == 200) {
+        _memoryToken = data['token'];
+        _memoryUser = jsonEncode(data['user']);
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString(_tokenKey, data['token']);
         await prefs.setString(_currentUserKey, jsonEncode(data['user']));
@@ -240,7 +234,7 @@ class AuthService {
         return {'success': false, 'message': data['error'] ?? 'Invalid code'};
       }
     } catch (e) {
-      print('AuthService verify2fa offline/viva fallback mode: $e');
+      print('AuthService verify2fa network error: $e');
       final currentUser = await getCurrentUser();
       if (currentUser != null) {
         return {'success': true, 'user': currentUser};
@@ -250,7 +244,7 @@ class AuthService {
         name: 'Verified User',
         email: 'user@plantora.app',
         role: 'Customer',
-        points: 1000,
+        points: 10,
         joinedAt: DateTime.now(),
       );
       return {'success': true, 'user': fallbackUser};
@@ -293,15 +287,34 @@ class AuthService {
       
       final response = await http.get(
         Uri.parse('$_baseUrl/auth/me'),
-        headers: {
+        headers: AppConfig.headers({
           'Authorization': 'Bearer $token',
-        },
-      ).timeout(const Duration(seconds: 4));
+        }),
+      ).timeout(const Duration(seconds: 15));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         if (data['success'] == true && data['user'] != null) {
-          final user = UserModel.fromMap(data['user']);
+          var user = UserModel.fromMap(data['user']);
+          
+          // Auto-clean corrupted base64 images from Firestore silently
+          final hasBase64Shop = user.shopImage != null && user.shopImage!.startsWith('data:image');
+          final hasBase64Avatar = user.avatarUrl != null && user.avatarUrl!.startsWith('data:image');
+          if (hasBase64Shop || hasBase64Avatar) {
+            try {
+              final cleanResp = await http.post(
+                Uri.parse('$_baseUrl/auth/clear-base64-images'),
+                headers: AppConfig.headers({'Authorization': 'Bearer $token'}),
+              ).timeout(const Duration(seconds: 10));
+              if (cleanResp.statusCode == 200) {
+                final cleanData = jsonDecode(cleanResp.body);
+                if (cleanData['user'] != null) {
+                  user = UserModel.fromMap(cleanData['user']);
+                }
+              }
+            } catch (_) {}
+          }
+          
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString(_currentUserKey, jsonEncode(user.toMap()));
           _memoryUser = jsonEncode(user.toMap());
@@ -309,22 +322,23 @@ class AuthService {
         }
       }
     } catch (e) {
-      print('AuthService fetchLatestUser failed/offline: $e');
+      print('AuthService fetchLatestUser failed: $e');
     }
     return getCurrentUser();
   }
+
 
   Future<bool> updateProfile(UserModel user) async {
     try {
       final token = await getToken();
       final response = await http.post(
         Uri.parse('$_baseUrl/auth/update-profile'),
-        headers: {
+        headers: AppConfig.headers({
           'Content-Type': 'application/json',
           if (token != null) 'Authorization': 'Bearer $token',
-        },
+        }),
         body: jsonEncode(user.toMap()),
-      ).timeout(const Duration(seconds: 5));
+      ).timeout(const Duration(seconds: 15));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -333,32 +347,72 @@ class AuthService {
             : user;
 
         final prefs = await SharedPreferences.getInstance();
-        await prefs.setString(_currentUserKey, jsonEncode(userToSave.toMap()));
-        _memoryUser = jsonEncode(userToSave.toMap());
+        final userJson = jsonEncode(userToSave.toMap());
+        await prefs.setString(_currentUserKey, userJson);
+        if (userToSave.email.isNotEmpty) {
+          await prefs.setString('user_account_${userToSave.email.trim().toLowerCase()}', userJson);
+        }
+        _memoryUser = userJson;
         return true;
       }
     } catch (e) {
       print('AuthService updateProfile network attempt skipped/failed, updating locally: $e');
     }
 
-    // Always update local persistent storage so edits succeed seamlessly!
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_currentUserKey, jsonEncode(user.toMap()));
-      _memoryUser = jsonEncode(user.toMap());
+      final userJson = jsonEncode(user.toMap());
+      await prefs.setString(_currentUserKey, userJson);
+      if (user.email.isNotEmpty) {
+        await prefs.setString('user_account_${user.email.trim().toLowerCase()}', userJson);
+      }
+      _memoryUser = userJson;
       return true;
     } catch (e) {
       return false;
     }
   }
 
+  Future<Map<String, dynamic>> changePassword(String currentPassword, String newPassword) async {
+    try {
+      final token = await getToken();
+      if (token == null) return {'success': false, 'error': 'You must be logged in'};
+
+      final response = await http.post(
+        Uri.parse('$_baseUrl/auth/change-password'),
+        headers: AppConfig.headers({
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        }),
+        body: jsonEncode({
+          'currentPassword': currentPassword,
+          'newPassword': newPassword,
+        }),
+      ).timeout(const Duration(seconds: 15));
+
+      final data = jsonDecode(response.body);
+      if (response.statusCode == 200) {
+        return {'success': true, 'message': data['message'] ?? 'Password updated successfully'};
+      } else {
+        return {'success': false, 'error': data['error'] ?? 'Failed to change password'};
+      }
+    } catch (e) {
+      print('AuthService changePassword error: $e');
+      return {'success': false, 'error': 'Failed to connect to server: $e'};
+    }
+  }
+
   Future<bool> updatePoints(int points) async {
     try {
+      final token = await getToken();
       final response = await http.post(
         Uri.parse('$_baseUrl/auth/update-points'),
-        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ${await getToken()}'},
+        headers: AppConfig.headers({
+          'Content-Type': 'application/json',
+          if (token != null) 'Authorization': 'Bearer $token',
+        }),
         body: jsonEncode({'points': points}),
-      );
+      ).timeout(const Duration(seconds: 15));
       return response.statusCode == 200;
     } catch (e) {
       return false;
@@ -367,16 +421,32 @@ class AuthService {
 
   Future<bool> deleteAccount() async {
     try {
+      final token = await getToken();
+      final currentUser = await getCurrentUser();
+      final emailLower = currentUser?.email.trim().toLowerCase();
+      final userRole = currentUser?.role.toLowerCase();
+
       final response = await http.delete(
         Uri.parse('$_baseUrl/auth/delete-account'),
-        headers: {'Authorization': 'Bearer ${await getToken()}'},
-      );
-      if (response.statusCode == 200) {
-        await logout();
-        return true;
+        headers: AppConfig.headers({if (token != null) 'Authorization': 'Bearer $token'}),
+      ).timeout(const Duration(seconds: 15));
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_currentUserKey);
+      await prefs.remove(_tokenKey);
+      if (emailLower != null && emailLower.isNotEmpty) {
+        await prefs.remove('user_account_$emailLower');
+        if (userRole != null) {
+          await prefs.remove('user_account_${emailLower}_$userRole');
+          await prefs.setBool('deleted_account_${emailLower}_$userRole', true);
+        }
       }
-      return false;
+      _memoryToken = null;
+      _memoryUser = null;
+
+      return response.statusCode == 200;
     } catch (e) {
+      print('AuthService deleteAccount error: $e');
       return false;
     }
   }
@@ -384,13 +454,14 @@ class AuthService {
   Future<String?> uploadProfileImage(List<int> bytes, String filename) async {
     try {
       var request = http.MultipartRequest('POST', Uri.parse('$_baseUrl/auth/upload-avatar'));
+      request.headers.addAll(AppConfig.defaultHeaders);
       final token = await getToken();
       if (token != null) {
         request.headers['Authorization'] = 'Bearer $token';
       }
       request.files.add(http.MultipartFile.fromBytes('avatar', bytes, filename: filename));
       
-      var streamedResponse = await request.send().timeout(const Duration(seconds: 4));
+      var streamedResponse = await request.send().timeout(const Duration(seconds: 15));
       var response = await http.Response.fromStream(streamedResponse);
       
       if (response.statusCode == 200) {
@@ -400,7 +471,7 @@ class AuthService {
         }
       }
     } catch (e) {
-      print('AuthService uploadProfileImage network upload failed, using base64: $e');
+      print('AuthService uploadProfileImage network upload failed: $e');
     }
 
     final base64Str = base64Encode(bytes);
@@ -410,13 +481,14 @@ class AuthService {
   Future<String?> uploadShopImage(List<int> bytes, String filename) async {
     try {
       var request = http.MultipartRequest('POST', Uri.parse('$_baseUrl/auth/upload-shop-image'));
+      request.headers.addAll(AppConfig.defaultHeaders);
       final token = await getToken();
       if (token != null) {
         request.headers['Authorization'] = 'Bearer $token';
       }
       request.files.add(http.MultipartFile.fromBytes('shopImage', bytes, filename: filename));
       
-      var streamedResponse = await request.send().timeout(const Duration(seconds: 4));
+      var streamedResponse = await request.send().timeout(const Duration(seconds: 30));
       var response = await http.Response.fromStream(streamedResponse);
       
       if (response.statusCode == 200) {
@@ -425,27 +497,31 @@ class AuthService {
           return data['shopImage'];
         }
       }
+      print('AuthService uploadShopImage failed: status=${response.statusCode} body=${response.body}');
     } catch (e) {
-      print('AuthService uploadShopImage network upload failed, using base64: $e');
+      print('AuthService uploadShopImage network upload failed: $e');
     }
-
-    final base64Str = base64Encode(bytes);
-    return 'data:image/jpeg;base64,$base64Str';
+    // Do NOT fall back to base64 — that would store huge strings in Firestore
+    // and break image display. Return null to signal failure.
+    return null;
   }
 
   Future<Map<String, dynamic>> forgotPassword(String email) async {
     try {
       final response = await http.post(
         Uri.parse('$_baseUrl/auth/forgot-password'),
-        headers: {'Content-Type': 'application/json'},
+        headers: AppConfig.headers({'Content-Type': 'application/json'}),
         body: jsonEncode({'email': email}),
-      ).timeout(const Duration(seconds: 2));
+      ).timeout(const Duration(seconds: 15));
+
       final data = jsonDecode(response.body);
       if (response.statusCode == 200) {
         return {'success': true, 'message': data['message'] ?? 'Recovery code sent'};
+      } else {
+        return {'success': false, 'error': data['error'] ?? 'User not found'};
       }
     } catch (e) {
-      print('AuthService forgotPassword offline fallback mode: $e');
+      print('AuthService forgotPassword network error: $e');
     }
     return {'success': true, 'message': 'Recovery code sent (Viva Demo Code: 123456)'};
   }
@@ -454,43 +530,45 @@ class AuthService {
     try {
       final response = await http.post(
         Uri.parse('$_baseUrl/auth/verify-reset-code'),
-        headers: {'Content-Type': 'application/json'},
+        headers: AppConfig.headers({'Content-Type': 'application/json'}),
         body: jsonEncode({'email': email, 'code': code}),
-      ).timeout(const Duration(seconds: 2));
+      ).timeout(const Duration(seconds: 15));
       if (response.statusCode == 200) return true;
     } catch (e) {
-      print('AuthService verifyResetCode offline fallback mode: $e');
+      print('AuthService verifyResetCode error: $e');
     }
-    return true;
+    return code == '123456';
   }
 
   Future<bool> resetPassword(String email, String code, String newPassword) async {
     try {
       final response = await http.post(
         Uri.parse('$_baseUrl/auth/reset-password'),
-        headers: {'Content-Type': 'application/json'},
+        headers: AppConfig.headers({'Content-Type': 'application/json'}),
         body: jsonEncode({'email': email, 'code': code, 'newPassword': newPassword}),
-      ).timeout(const Duration(seconds: 2));
+      ).timeout(const Duration(seconds: 15));
       if (response.statusCode == 200) return true;
     } catch (e) {
-      print('AuthService resetPassword offline fallback mode: $e');
+      print('AuthService resetPassword error: $e');
     }
-    return true;
+    return false;
   }
 
   Future<Map<String, dynamic>> resendResetCode(String email) async {
     try {
       final response = await http.post(
         Uri.parse('$_baseUrl/auth/resend-reset-code'),
-        headers: {'Content-Type': 'application/json'},
+        headers: AppConfig.headers({'Content-Type': 'application/json'}),
         body: jsonEncode({'email': email}),
-      ).timeout(const Duration(seconds: 2));
+      ).timeout(const Duration(seconds: 15));
       final data = jsonDecode(response.body);
       if (response.statusCode == 200) {
         return {'success': true, 'message': data['message'] ?? 'New code sent'};
+      } else {
+        return {'success': false, 'error': data['error'] ?? 'Failed to resend code'};
       }
     } catch (e) {
-      print('AuthService resendResetCode offline fallback mode: $e');
+      print('AuthService resendResetCode error: $e');
     }
     return {'success': true, 'message': 'New recovery code sent (Viva Demo Code: 123456)'};
   }
@@ -506,17 +584,17 @@ class AuthService {
       if (token == null) return false;
       final response = await http.post(
         Uri.parse('$_baseUrl/user/bank-details'),
-        headers: {
+        headers: AppConfig.headers({
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $token',
-        },
+        }),
         body: jsonEncode({
           'cardHolderName': cardHolderName,
           'cardNumber': cardNumber,
           'expiryDate': expiryDate,
           'bankName': bankName ?? '',
         }),
-      );
+      ).timeout(const Duration(seconds: 15));
       return response.statusCode == 200;
     } catch (e) {
       print('Error updating bank details: $e');

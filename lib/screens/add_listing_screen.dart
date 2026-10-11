@@ -136,6 +136,7 @@ class _AddListingScreenState extends State<AddListingScreen>
       fileName = _selectedImage!.name;
     }
 
+    final currentUser = await _authService.getCurrentUser();
     final errorStr = await _marketService.addProduct({
       'title': _titleController.text,
       'description': _descController.text,
@@ -144,6 +145,9 @@ class _AddListingScreenState extends State<AddListingScreen>
       'category': _selectedCategory,
       'stock': int.tryParse(_stockController.text) ?? 10,
       'emoji': _categories.firstWhere((c) => c['value'] == _selectedCategory)['emoji'],
+      'sellerId': currentUser?.id ?? 's_demo',
+      'sellerName': currentUser?.businessName ?? currentUser?.name ?? 'My Green Shop',
+      'sellerLocation': currentUser?.location ?? 'Colombo, Sri Lanka',
     }, token, imageBytes: imageBytes, fileName: fileName);
 
     if (mounted) {

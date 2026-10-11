@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
+import '../providers/localization_provider.dart';
 
 class LoyaltyCard extends StatelessWidget {
   final VoidCallback? onTap;
@@ -69,7 +70,8 @@ class LoyaltyCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final user = context.watch<AuthProvider>().user;
-    final currentPoints = user?.points ?? 250;
+    final loc = context.watch<LocalizationProvider>();
+    final currentPoints = user?.points ?? 10;
     final userName = user?.name ?? 'Plant Lover';
     final currentLvl = getCurrentLevel(currentPoints);
     final nextLvl = getNextLevel(currentPoints);
@@ -207,7 +209,7 @@ class LoyaltyCard extends StatelessWidget {
                                     ),
                                   ),
                                   Text(
-                                    'VIP Membership',
+                                    loc.translate('vip_membership'),
                                     style: GoogleFonts.inter(
                                       color: Colors.white70,
                                       fontSize: 10,
@@ -242,7 +244,7 @@ class LoyaltyCard extends StatelessWidget {
                                 ),
                                 const SizedBox(width: 6),
                                 Text(
-                                  currentLvl['name'] as String,
+                                  loc.translate((currentLvl['name'] as String).toLowerCase()),
                                   style: GoogleFonts.outfit(
                                     color: Colors.white,
                                     fontWeight: FontWeight.w700,
@@ -288,7 +290,7 @@ class LoyaltyCard extends StatelessWidget {
                                   ),
                                   const SizedBox(width: 8),
                                   Text(
-                                    'PTS',
+                                    loc.translate('pts'),
                                     style: GoogleFonts.outfit(
                                       color: Colors.white.withOpacity(0.85),
                                       fontSize: 14,
@@ -300,7 +302,7 @@ class LoyaltyCard extends StatelessWidget {
                               ),
                               const SizedBox(height: 2),
                               Text(
-                                'Cheer Points Available',
+                                loc.translate('cheer_points_available'),
                                 style: GoogleFonts.inter(
                                   color: Colors.white.withOpacity(0.8),
                                   fontSize: 12,
@@ -355,7 +357,7 @@ class LoyaltyCard extends StatelessWidget {
                                 const SizedBox(height: 6),
                                 if (nextLvl != null)
                                   Text(
-                                    '$pointsToNext pts to ${nextLvl['emoji']} ${nextLvl['name']} Tier',
+                                    '$pointsToNext ${loc.translate('pts_to')} ${nextLvl['emoji']} ${loc.translate((nextLvl['name'] as String).toLowerCase())} ${loc.translate('tier')}',
                                     style: GoogleFonts.inter(
                                       color: Colors.white.withOpacity(0.9),
                                       fontSize: 11,
@@ -365,7 +367,7 @@ class LoyaltyCard extends StatelessWidget {
                                   )
                                 else
                                   Text(
-                                    '🏆 Ultimate Plantora Tier Reached',
+                                    '🏆 ${loc.translate('tier_reached')}',
                                     style: GoogleFonts.inter(
                                       color: Colors.white,
                                       fontSize: 11,
@@ -381,7 +383,7 @@ class LoyaltyCard extends StatelessWidget {
                             crossAxisAlignment: CrossAxisAlignment.end,
                             children: [
                               Text(
-                                'CARD HOLDER',
+                                loc.translate('card_holder'),
                                 style: GoogleFonts.inter(
                                   color: Colors.white54,
                                   fontSize: 8.5,

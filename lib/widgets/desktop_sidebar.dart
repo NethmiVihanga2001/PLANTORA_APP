@@ -1,9 +1,11 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../theme/app_theme.dart';
+import '../config/app_config.dart';
 import '../providers/auth_provider.dart';
 import '../providers/cart_provider.dart';
 import '../providers/favorites_provider.dart';
+import '../providers/localization_provider.dart';
 
 /// Full-width desktop sidebar shown on screens wider than 1200px.
 class DesktopSidebar extends StatelessWidget {
@@ -21,11 +23,12 @@ class DesktopSidebar extends StatelessWidget {
     final user = context.watch<AuthProvider>().user;
     final cart = context.watch<CartProvider>();
     final favs = context.watch<FavoritesProvider>();
+    final loc = context.watch<LocalizationProvider>();
 
     final mainItems = [
-      _SidebarItem(icon: Icons.home_rounded, label: 'Home'),
-      _SidebarItem(icon: Icons.camera_alt_rounded, label: 'Scan Plant'),
-      _SidebarItem(icon: Icons.storefront_rounded, label: 'Marketplace'),
+      _SidebarItem(icon: Icons.home_rounded, label: loc.translate('home')),
+      _SidebarItem(icon: Icons.camera_alt_rounded, label: loc.translate('scan_plant')),
+      _SidebarItem(icon: Icons.storefront_rounded, label: loc.translate('marketplace')),
     ];
 
     return Container(
@@ -87,7 +90,7 @@ class DesktopSidebar extends StatelessWidget {
                         ),
                       ),
                       Text(
-                        'Plant & Care App',
+                        loc.translate('app_subtitle'),
                         style: TextStyle(
                           color: context.textSecondary,
                           fontSize: 11,
@@ -107,7 +110,7 @@ class DesktopSidebar extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
               child: Text(
-                'MAIN MENU',
+                loc.translate('main_menu'),
                 style: TextStyle(
                   color: context.textTertiary,
                   fontSize: 10,
@@ -148,13 +151,13 @@ class DesktopSidebar extends StatelessWidget {
             _buildSecondaryItem(
               context,
               icon: Icons.person_rounded,
-              label: 'My Profile',
+              label: loc.translate('my_profile'),
               onTap: () => Navigator.pushNamed(context, '/profile'),
             ),
             _buildSecondaryItem(
               context,
               icon: Icons.shopping_bag_rounded,
-              label: 'My Cart',
+              label: loc.translate('my_cart'),
               badge: cart.itemCount > 0 ? '${cart.itemCount}' : null,
               badgeColor: const Color(0xFFF97316),
               onTap: () => Navigator.pushNamed(context, '/cart'),
@@ -162,7 +165,7 @@ class DesktopSidebar extends StatelessWidget {
             _buildSecondaryItem(
               context,
               icon: Icons.favorite_rounded,
-              label: 'Favourites',
+              label: loc.translate('my_favourites'),
               badge: favs.count > 0 ? '${favs.count}' : null,
               badgeColor: Colors.redAccent,
               iconColor: favs.count > 0 ? Colors.redAccent : null,
@@ -171,13 +174,13 @@ class DesktopSidebar extends StatelessWidget {
             _buildSecondaryItem(
               context,
               icon: Icons.receipt_long_rounded,
-              label: 'My Orders',
+              label: loc.translate('my_orders'),
               onTap: () => Navigator.pushNamed(context, '/orders'),
             ),
             _buildSecondaryItem(
               context,
               icon: Icons.settings_rounded,
-              label: 'Settings',
+              label: loc.translate('settings'),
               onTap: () => Navigator.pushNamed(context, '/settings'),
             ),
 
@@ -194,7 +197,7 @@ class DesktopSidebar extends StatelessWidget {
                       radius: 18,
                       backgroundColor: AppColors.primaryGreen.withOpacity(0.15),
                       backgroundImage: (user.avatarUrl != null && user.avatarUrl!.isNotEmpty)
-                          ? NetworkImage('http://localhost:3000${user.avatarUrl}')
+                          ? NetworkImage(user.avatarUrl!.startsWith('http') ? user.avatarUrl! : '${AppConfig.baseUrl}${user.avatarUrl}')
                           : null,
                       child: (user.avatarUrl == null || user.avatarUrl!.isEmpty)
                           ? Text(

@@ -8,9 +8,11 @@ import '../models/product_model.dart';
 import '../services/marketplace_service.dart';
 import '../theme/app_theme.dart';
 import '../config/app_config.dart';
+import '../widgets/product_image.dart';
 import 'product_detail_screen.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_service.dart';
+import '../providers/auth_provider.dart';
 import '../services/chat_service.dart';
 import '../models/cart_item_model.dart';
 import 'chat_detail_screen.dart';
@@ -18,6 +20,7 @@ import '../providers/cart_provider.dart';
 import '../providers/favorites_provider.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:async';
 
 class ShopScreen extends StatefulWidget {
   final String sellerId;
@@ -43,21 +46,39 @@ class _ShopScreenState extends State<ShopScreen> {
   List<ProductModel> _products = [];
   String? _shopImage;
   String? _sellerAvatar;
+  String? _businessName;
   List<dynamic> _ads = [];
   late PageController _adPageController;
+  Timer? _adTimer;
   int _currentAdPage = 0;
 
   @override
   void initState() {
     super.initState();
-    _adPageController = PageController();
+    _adPageController = PageController(viewportFraction: 0.94);
     _loadShopData();
   }
 
   @override
   void dispose() {
+    _adTimer?.cancel();
     _adPageController.dispose();
     super.dispose();
+  }
+
+  void _startAdAutoSlide() {
+    _adTimer?.cancel();
+    if (_ads.length <= 1) return;
+    _adTimer = Timer.periodic(const Duration(seconds: 4), (timer) {
+      if (_adPageController.hasClients) {
+        _currentAdPage = (_currentAdPage + 1) % _ads.length;
+        _adPageController.animateToPage(
+          _currentAdPage,
+          duration: const Duration(milliseconds: 750),
+          curve: Curves.easeInOut,
+        );
+      }
+    });
   }
 
   Color _parseColor(String? hexStr, Color defaultColor) {
@@ -80,17 +101,32 @@ class _ShopScreenState extends State<ShopScreen> {
     
     String? shopImage;
     String? sellerAvatar;
+    String? businessName;
     List<dynamic> ads = [];
+
+    final currentUser = context.read<AuthProvider>().user;
+    if (currentUser != null && (currentUser.id == widget.sellerId || currentUser.businessName == widget.sellerName || currentUser.name == widget.sellerName)) {
+      shopImage = currentUser.shopImage;
+      sellerAvatar = currentUser.avatarUrl ?? currentUser.shopImage;
+      businessName = currentUser.businessName ?? currentUser.name;
+    }
     
     try {
-      final userRes = await http.get(Uri.parse('${AppConfig.baseUrl}/users/${widget.sellerId}'));
+      final userRes = await http.get(
+        Uri.parse('${AppConfig.baseUrl}/users/${widget.sellerId}'),
+        headers: AppConfig.defaultHeaders,
+      ).timeout(const Duration(seconds: 10));
       if (userRes.statusCode == 200) {
         final userData = jsonDecode(userRes.body);
-        shopImage = userData['shopImage'];
-        sellerAvatar = userData['avatarUrl'] ?? userData['shopImage'];
+        if (userData['shopImage'] != null && userData['shopImage'].toString().isNotEmpty) shopImage = userData['shopImage'];
+        if (userData['avatarUrl'] != null && userData['avatarUrl'].toString().isNotEmpty) sellerAvatar = userData['avatarUrl'];
+        if (userData['businessName'] != null && userData['businessName'].toString().isNotEmpty) businessName = userData['businessName'];
       }
       
-      final adsRes = await http.get(Uri.parse('${AppConfig.baseUrl}/ads/${widget.sellerId}'));
+      final adsRes = await http.get(
+        Uri.parse('${AppConfig.baseUrl}/ads/${widget.sellerId}'),
+        headers: AppConfig.defaultHeaders,
+      ).timeout(const Duration(seconds: 10));
       if (adsRes.statusCode == 200) {
         ads = jsonDecode(adsRes.body);
       }
@@ -98,18 +134,40 @@ class _ShopScreenState extends State<ShopScreen> {
       debugPrint('Error fetching shop extra data: $e');
     }
 
+    if ((businessName == null || businessName == 'Seller' || businessName.isEmpty) && products.isNotEmpty) {
+      final firstProd = products.first;
+      if (firstProd.sellerName.isNotEmpty && firstProd.sellerName != 'Seller') {
+        businessName = firstProd.sellerName;
+      }
+    }
+    if ((sellerAvatar == null || sellerAvatar.isEmpty || sellerAvatar == 'null') && products.isNotEmpty) {
+      final firstProd = products.first;
+      if (firstProd.sellerAvatar != null && firstProd.sellerAvatar!.isNotEmpty && firstProd.sellerAvatar != 'null') {
+        sellerAvatar = firstProd.sellerAvatar;
+      }
+    }
+
     setState(() {
       _products = products;
       _shopImage = shopImage;
       _sellerAvatar = sellerAvatar;
+      _businessName = businessName;
       _ads = ads;
       _isLoading = false;
     });
+    _startAdAutoSlide();
   }
 
   Widget _buildPremiumHeader(BuildContext context) {
-    final effectiveAvatar = _sellerAvatar ?? _shopImage ?? widget.sellerAvatar;
-    final hasAvatar = effectiveAvatar != null && effectiveAvatar.trim().isNotEmpty && effectiveAvatar != 'null';
+    final effectiveAvatar = _sellerAvatar ?? (widget.sellerAvatar != null && widget.sellerAvatar != 'null' ? widget.sellerAvatar : (_products.isNotEmpty ? _products.first.sellerAvatar : null));
+    final String shopTitle = (_businessName != null && _businessName!.trim().isNotEmpty && _businessName != 'Seller')
+        ? _businessName!
+        : (widget.sellerName.isNotEmpty && widget.sellerName != 'Seller'
+            ? widget.sellerName
+            : (_products.isNotEmpty && _products.first.sellerName.isNotEmpty && _products.first.sellerName != 'Seller'
+                ? _products.first.sellerName
+                : 'Green Plant Shop'));
+    final String ownerName = widget.sellerName;
 
     return Stack(
       clipBehavior: Clip.none,
@@ -130,15 +188,14 @@ class _ShopScreenState extends State<ShopScreen> {
                     ],
                   )
                 : null,
-            image: _shopImage != null
-                ? DecorationImage(
-                    image: CachedNetworkImageProvider(
-                      _shopImage!.startsWith('http') ? _shopImage! : '${AppConfig.baseUrl}$_shopImage',
-                    ),
-                    fit: BoxFit.cover,
-                  )
-                : null,
           ),
+          child: _shopImage != null && _shopImage!.isNotEmpty
+              ? ProductImage(
+                  imageUrl: _shopImage,
+                  emoji: '🌿',
+                  fit: BoxFit.cover,
+                )
+              : null,
         ),
 
         // Back Button
@@ -204,20 +261,15 @@ class _ShopScreenState extends State<ShopScreen> {
                       ),
                     ],
                   ),
-                  child: CircleAvatar(
-                    radius: 28,
-                    backgroundColor: context.scaffoldBg,
-                    backgroundImage: hasAvatar
-                        ? NetworkImage(effectiveAvatar.startsWith('http') 
-                            ? effectiveAvatar 
-                            : '${AppConfig.baseUrl}$effectiveAvatar')
-                        : null,
-                    child: !hasAvatar
-                        ? Text(
-                            widget.sellerName.isNotEmpty ? widget.sellerName.substring(0, 1).toUpperCase() : 'S',
-                            style: const TextStyle(color: Color(0xFF1E8C51), fontSize: 24, fontWeight: FontWeight.bold),
-                          )
-                        : null,
+                  child: SizedBox(
+                    width: 56,
+                    height: 56,
+                    child: ProductImage(
+                      imageUrl: effectiveAvatar,
+                      emoji: shopTitle.isNotEmpty ? shopTitle[0].toUpperCase() : '🌿',
+                      borderRadius: BorderRadius.circular(28),
+                      emojiSize: 22,
+                    ),
                   ),
                 ),
                 const SizedBox(width: 14),
@@ -227,7 +279,7 @@ class _ShopScreenState extends State<ShopScreen> {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Text(
-                        widget.sellerName,
+                        shopTitle,
                         style: GoogleFonts.inter(
                           fontSize: 18,
                           fontWeight: FontWeight.w800,
@@ -243,11 +295,11 @@ class _ShopScreenState extends State<ShopScreen> {
                           const SizedBox(width: 6),
                           Expanded(
                             child: Text(
-                              widget.sellerLocation,
+                              _businessName != null ? 'Owner: $ownerName • ${widget.sellerLocation}' : widget.sellerLocation,
                               style: GoogleFonts.inter(
-                                fontSize: 13,
+                                fontSize: 12.5,
                                 color: context.textSecondary,
-                                fontWeight: FontWeight.w500,
+                                fontWeight: FontWeight.w600,
                               ),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
@@ -302,17 +354,11 @@ class _ShopScreenState extends State<ShopScreen> {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  imageUrl.isNotEmpty
-                      ? CachedNetworkImage(
-                          imageUrl: imageUrl,
-                          fit: BoxFit.cover,
-                          placeholder: (context, url) => Container(color: context.scaffoldBg),
-                          errorWidget: (context, url, error) => Container(
-                            color: context.scaffoldBg,
-                            child: const Center(child: Icon(Icons.local_florist, size: 40, color: Colors.grey)),
-                          ),
-                        )
-                      : Container(color: context.scaffoldBg),
+                  ProductImage(
+                    imageUrl: product.imageUrl,
+                    emoji: product.emoji,
+                    fit: BoxFit.cover,
+                  ),
                   // Price Tag Overlay
                   Positioned(
                     top: 12,
@@ -394,11 +440,13 @@ class _ShopScreenState extends State<ShopScreen> {
               widget.sellerName,
               widget.sellerAvatar,
             );
-            if (chatData != null && context.mounted) {
+            if (context.mounted) {
+              final targetChatId = (chatData?['chatId'] ?? chatData?['id'] ?? 'chat_${user.id}_${widget.sellerId}').toString();
               Navigator.push(context, MaterialPageRoute(
                 builder: (_) => ChatDetailScreen(
-                  chatId: chatData['id'],
+                  chatId: targetChatId,
                   otherParticipantName: widget.sellerName,
+                  otherParticipantRole: 'Seller',
                 ),
               ));
             }
@@ -416,154 +464,8 @@ class _ShopScreenState extends State<ShopScreen> {
           children: [
             _buildPremiumHeader(context),
             const SizedBox(height: 60), // Balanced space for overlapping header card
-            if (_ads.isNotEmpty)
-              Container(
-                height: 160,
-                margin: const EdgeInsets.symmetric(horizontal: 16),
-                child: PageView.builder(
-                  controller: _adPageController,
-                  itemCount: _ads.length,
-                  onPageChanged: (i) => setState(() => _currentAdPage = i),
-                  itemBuilder: (context, index) {
-                    final ad = _ads[index];
-                    final hasImage = ad['imageUrl'] != null && ad['imageUrl'].toString().isNotEmpty;
-                    final color1 = _parseColor(ad['colorHex'], const Color(0xFF0F5A32));
-                    final color2 = _parseColor(ad['colorHexSecondary'], const Color(0xFF34D399));
-                    return Container(
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(20),
-                        gradient: hasImage ? null : LinearGradient(
-                          colors: [color1, color2],
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                        ),
-                        image: hasImage ? DecorationImage(
-                          image: CachedNetworkImageProvider(
-                            ad['imageUrl'].toString().startsWith('http') 
-                                ? ad['imageUrl'] 
-                                : '${AppConfig.baseUrl}${ad['imageUrl']}',
-                          ),
-                          fit: BoxFit.cover,
-                        ) : null,
-                        boxShadow: const [
-                          BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0, 5)),
-                        ],
-                      ),
-                      child: Container(
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(20),
-                          gradient: LinearGradient(
-                            colors: [Colors.black.withOpacity(0.6), Colors.transparent],
-                            begin: Alignment.bottomLeft,
-                            end: Alignment.topRight,
-                          ),
-                        ),
-                        padding: const EdgeInsets.all(20),
-                        alignment: Alignment.bottomLeft,
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.end,
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  if (ad['discountPercentage'] != null)
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                                      margin: const EdgeInsets.only(bottom: 6),
-                                      decoration: BoxDecoration(
-                                        color: Colors.white.withOpacity(0.25),
-                                        borderRadius: BorderRadius.circular(8),
-                                      ),
-                                      child: Text(
-                                        '${ad['discountPercentage']}% OFF',
-                                        style: GoogleFonts.inter(
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.w800,
-                                          color: Colors.white,
-                                          letterSpacing: 0.5,
-                                        ),
-                                      ),
-                                    ),
-                                  Text(
-                                    ad['title'] ?? 'Special Offer',
-                                    style: GoogleFonts.inter(
-                                      fontSize: 22,
-                                      fontWeight: FontWeight.bold,
-                                      color: Colors.white,
-                                    ),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                  if (ad['description'] != null && ad['description'].toString().isNotEmpty)
-                                    Padding(
-                                      padding: const EdgeInsets.only(top: 3),
-                                      child: Text(
-                                        ad['description'].toString(),
-                                        style: GoogleFonts.inter(
-                                          fontSize: 13,
-                                          color: Colors.white.withOpacity(0.85),
-                                        ),
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                    )
-                                  else if (ad['validity'] != null && ad['validity'].toString().isNotEmpty)
-                                    Padding(
-                                      padding: const EdgeInsets.only(top: 3),
-                                      child: Text(
-                                        ad['validity'].toString(),
-                                        style: GoogleFonts.inter(
-                                          fontSize: 13,
-                                          color: Colors.white.withOpacity(0.85),
-                                        ),
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                    ),
-                                ],
-                              ),
-                            ),
-                            Container(
-                              width: 60,
-                              height: 60,
-                              decoration: BoxDecoration(
-                                color: Colors.white.withOpacity(0.15),
-                                shape: BoxShape.circle,
-                              ),
-                              child: const Icon(
-                                Icons.local_offer_rounded,
-                                color: Colors.white,
-                                size: 28,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ),
-            if (_ads.length > 1)
-              Padding(
-                padding: const EdgeInsets.only(top: 10),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: List.generate(
-                    _ads.length,
-                    (index) => Container(
-                      margin: const EdgeInsets.symmetric(horizontal: 3),
-                      width: _currentAdPage == index ? 20 : 8,
-                      height: 8,
-                      decoration: BoxDecoration(
-                        color: _currentAdPage == index ? AppColors.primaryGreen : Colors.grey.shade400,
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            const SizedBox(height: 12),
+            _buildOffersBanner(),
+            const SizedBox(height: 16),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Row(
@@ -664,40 +566,11 @@ class _ShopScreenState extends State<ShopScreen> {
           children: [
             // Product image full size
             Positioned.fill(
-              child: ClipRRect(
+              child: ProductImage(
+                imageUrl: product.imageUrl,
+                emoji: product.emoji,
+                fit: BoxFit.cover,
                 borderRadius: BorderRadius.circular(18),
-                child: product.imageUrl.isNotEmpty
-                    ? Image.network(
-                        product.imageUrl.startsWith('http')
-                            ? product.imageUrl
-                            : '${AppConfig.baseUrl}${product.imageUrl}',
-                        fit: BoxFit.cover,
-                        loadingBuilder: (c, child, progress) {
-                          if (progress == null) return child;
-                          return Container(
-                            color: context.isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
-                            child: const Center(
-                              child: SizedBox(
-                                width: 22,
-                                height: 22,
-                                child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primaryGreen),
-                              ),
-                            ),
-                          );
-                        },
-                        errorBuilder: (context, error, stackTrace) => Container(
-                          color: context.isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
-                          child: Center(
-                            child: Icon(Icons.eco_rounded, size: 40, color: AppColors.primaryGreen.withOpacity(0.5)),
-                          ),
-                        ),
-                      )
-                    : Container(
-                        color: context.isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
-                        child: Center(
-                          child: Icon(Icons.eco_rounded, size: 40, color: AppColors.primaryGreen.withOpacity(0.5)),
-                        ),
-                      ),
               ),
             ),
 
@@ -825,6 +698,160 @@ class _ShopScreenState extends State<ShopScreen> {
     .animate()
     .slideY(begin: 0.18, delay: Duration(milliseconds: 50 * (index % 6)), duration: 350.ms, curve: Curves.easeOutCubic)
     .fadeIn(delay: Duration(milliseconds: 50 * (index % 6)), duration: 350.ms);
+  }
+
+  Widget _buildOffersBanner() {
+    if (_ads.isEmpty) return const SizedBox.shrink();
+
+    return Column(
+      children: [
+        SizedBox(
+          height: 84,
+          child: PageView.builder(
+            controller: _adPageController,
+            onPageChanged: (i) => setState(() => _currentAdPage = i),
+            itemCount: _ads.length,
+            itemBuilder: (context, index) {
+              final ad = _ads[index];
+              final color1 = _parseColor(ad['colorHex'], const Color(0xFF0F5A32));
+              final color2 = _parseColor(ad['colorHexSecondary'], const Color(0xFF34D399));
+              final hasImage = ad['imageUrl'] != null && ad['imageUrl'].toString().isNotEmpty;
+
+              return Container(
+                margin: const EdgeInsets.symmetric(horizontal: 6),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [color1, color2],
+                    begin: Alignment.centerLeft,
+                    end: Alignment.centerRight,
+                  ),
+                  image: hasImage
+                      ? DecorationImage(
+                          image: CachedNetworkImageProvider(
+                            ad['imageUrl'].toString().startsWith('http')
+                                ? ad['imageUrl']
+                                : '${AppConfig.baseUrl}${ad['imageUrl']}',
+                          ),
+                          fit: BoxFit.cover,
+                          colorFilter: ColorFilter.mode(
+                            Colors.black.withOpacity(0.4),
+                            BlendMode.darken,
+                          ),
+                        )
+                      : null,
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: [
+                    BoxShadow(
+                      color: color1.withOpacity(0.3),
+                      blurRadius: 12,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.25),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        (ad['discountPercentage'] != null &&
+                                ad['discountPercentage'].toString().isNotEmpty)
+                            ? '${ad['discountPercentage']}% OFF'
+                            : 'OFFER',
+                        style: GoogleFonts.inter(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            ad['title'] ?? 'Special Offer',
+                            style: GoogleFonts.inter(
+                              color: Colors.white,
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          Text(
+                            (ad['description'] != null &&
+                                    ad['description'].toString().isNotEmpty)
+                                ? ad['description'].toString()
+                                : (ad['validity'] != null &&
+                                        ad['validity'].toString().isNotEmpty
+                                    ? ad['validity'].toString()
+                                    : 'Limited time offer!'),
+                            style: GoogleFonts.inter(
+                              color: Colors.white.withOpacity(0.85),
+                              fontSize: 10.5,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.1),
+                            blurRadius: 4,
+                          ),
+                        ],
+                      ),
+                      child: Text(
+                        'Claim Now →',
+                        style: GoogleFonts.inter(
+                          color: color1,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        ),
+        if (_ads.length > 1) ...[
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: List.generate(_ads.length, (i) {
+              final isActive = i == _currentAdPage;
+              return AnimatedContainer(
+                duration: const Duration(milliseconds: 300),
+                margin: const EdgeInsets.symmetric(horizontal: 2),
+                width: isActive ? 18 : 5,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: isActive ? AppColors.primaryGreen : Colors.grey.shade300,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              );
+            }),
+          ),
+        ],
+      ],
+    );
   }
 }
 

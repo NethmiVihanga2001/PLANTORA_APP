@@ -4,6 +4,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import '../providers/notification_provider.dart';
 import '../providers/auth_provider.dart';
+import '../providers/localization_provider.dart';
 import '../widgets/premium_app_bar.dart';
 import '../widgets/responsive_layout.dart';
 import '../widgets/app_drawer.dart';
@@ -39,20 +40,28 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   Widget build(BuildContext context) {
     final notificationProvider = context.watch<NotificationProvider>();
     final authProvider = context.watch<AuthProvider>();
-    final isSeller = authProvider.user?.role == 'Seller';
+    final loc = context.watch<LocalizationProvider>();
     
-    final allNotifications = isSeller ? notificationProvider.sellerNotifications : notificationProvider.notifications;
-    final unreadCount = isSeller ? notificationProvider.sellerUnreadCount : notificationProvider.unreadCount;
+    final allNotifications = notificationProvider.notifications;
+    final unreadCount = notificationProvider.unreadCount;
     final filtered = _getFilteredNotifications(allNotifications);
 
     return Scaffold(
       backgroundColor: context.scaffoldBg,
       drawer: const AppDrawer(),
       appBar: PremiumAppBar(
-        title: 'Notifications',
-        subtitle: unreadCount > 0 ? '$unreadCount Unread Alerts' : 'All Caught Up',
+        title: loc.translate('notifications'),
+        subtitle: unreadCount > 0 ? '$unreadCount ${loc.translate('unread_alerts')}' : loc.translate('all_caught_up'),
         showMenuButton: true,
         actions: [
+          // Refresh button
+          Padding(
+            padding: const EdgeInsets.only(right: 4),
+            child: IconButton(
+              icon: const Icon(Icons.refresh_rounded, color: Colors.white70, size: 20),
+              onPressed: () => context.read<NotificationProvider>().fetchNotifications(),
+            ),
+          ),
           if (unreadCount > 0)
             Padding(
               padding: const EdgeInsets.only(right: 12),
@@ -67,7 +76,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                 },
                 icon: const Icon(Icons.done_all_rounded, color: Color(0xFF34D399), size: 16),
                 label: Text(
-                  'Mark Read',
+                  loc.translate('mark_all_read'),
                   style: GoogleFonts.inter(
                     color: Colors.white,
                     fontWeight: FontWeight.w700,
@@ -137,7 +146,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                           child: Row(
                             children: [
                               Text(
-                                filter,
+                                loc.translate(filter.toLowerCase()),
                                 style: GoogleFonts.inter(
                                   fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
                                   fontSize: 13,
@@ -182,23 +191,29 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 
             // Notifications List
             Expanded(
-              child: filtered.isEmpty
-                  ? _buildEmptyState(context)
-                  : ListView.builder(
-                      physics: const BouncingScrollPhysics(),
-                      padding: const EdgeInsets.fromLTRB(16, 6, 16, 16),
-                      itemCount: filtered.length,
-                      itemBuilder: (context, index) {
-                        final notification = filtered[index];
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: _buildNotificationCard(context, notification)
-                              .animate()
-                              .fadeIn(duration: 300.ms, delay: Duration(milliseconds: index * 50))
-                              .slideY(begin: 0.08, curve: Curves.easeOutCubic),
-                        );
-                      },
-                    ),
+              child: notificationProvider.isLoading
+                  ? const Center(child: CircularProgressIndicator(color: Color(0xFF10B981)))
+                  : filtered.isEmpty
+                      ? _buildEmptyState(context)
+                      : RefreshIndicator(
+                          color: const Color(0xFF10B981),
+                          onRefresh: () => context.read<NotificationProvider>().fetchNotifications(),
+                          child: ListView.builder(
+                            physics: const AlwaysScrollableScrollPhysics(),
+                            padding: const EdgeInsets.fromLTRB(16, 6, 16, 16),
+                            itemCount: filtered.length,
+                            itemBuilder: (context, index) {
+                              final notification = filtered[index];
+                              return Padding(
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: _buildNotificationCard(context, notification)
+                                    .animate()
+                                    .fadeIn(duration: 300.ms, delay: Duration(milliseconds: index * 50))
+                                    .slideY(begin: 0.08, curve: Curves.easeOutCubic),
+                              );
+                            },
+                          ),
+                        ),
             ),
           ],
         ),
@@ -207,6 +222,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   }
 
   Widget _buildEmptyState(BuildContext context) {
+    final loc = context.watch<LocalizationProvider>();
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -235,7 +251,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           ).animate(onPlay: (c) => c.repeat(reverse: true)).scaleXY(begin: 0.95, end: 1.05, duration: 2.seconds),
           const SizedBox(height: 20),
           Text(
-            'All Caught Up!',
+            loc.translate('all_caught_up'),
             style: GoogleFonts.outfit(
               color: context.textPrimary,
               fontSize: 22,
@@ -246,7 +262,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 40),
             child: Text(
-              'No ${_selectedFilter == 'All' ? '' : _selectedFilter.toLowerCase()} notifications at the moment. We\'ll alert you about live updates!',
+              loc.translate('no_notifications'),
               textAlign: TextAlign.center,
               style: GoogleFonts.inter(
                 color: context.textSecondary,
@@ -432,16 +448,22 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   }
 
   String _formatTime(DateTime time) {
+    final localTime = time.toLocal();
     final now = DateTime.now();
-    final diff = now.difference(time);
-    if (diff.inMinutes < 1) {
+    final diff = now.difference(localTime);
+    if (diff.isNegative || diff.inMinutes < 1) {
       return 'Just now';
     } else if (diff.inMinutes < 60) {
       return '${diff.inMinutes}m ago';
     } else if (diff.inHours < 24) {
       return '${diff.inHours}h ago';
-    } else {
+    } else if (diff.inDays < 7) {
       return '${diff.inDays}d ago';
+    } else {
+      final hour12 = localTime.hour == 0 ? 12 : (localTime.hour > 12 ? localTime.hour - 12 : localTime.hour);
+      final ampm = localTime.hour >= 12 ? 'PM' : 'AM';
+      final min = localTime.minute.toString().padLeft(2, '0');
+      return '${localTime.day}/${localTime.month} $hour12:$min $ampm';
     }
   }
 }

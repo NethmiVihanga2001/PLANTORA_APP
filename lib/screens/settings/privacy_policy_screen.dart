@@ -464,7 +464,7 @@ class _PrivacyPolicyScreenState extends State<PrivacyPolicyScreen> {
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          'dpo@plantora.com',
+                          'supportplantora@gmail.com',
                           style: GoogleFonts.inter(
                             fontSize: 13,
                             fontWeight: FontWeight.w700,
@@ -480,7 +480,7 @@ class _PrivacyPolicyScreenState extends State<PrivacyPolicyScreen> {
               const SizedBox(width: 10),
               ElevatedButton.icon(
                 onPressed: () {
-                  Clipboard.setData(const ClipboardData(text: 'dpo@plantora.com'));
+                  Clipboard.setData(const ClipboardData(text: 'supportplantora@gmail.com'));
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: const Text('DPO email copied to clipboard!'),

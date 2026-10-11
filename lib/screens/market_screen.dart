@@ -18,6 +18,7 @@ import 'chat_detail_screen.dart';
 import '../services/chat_service.dart';
 import '../providers/auth_provider.dart';
 import '../providers/localization_provider.dart';
+import '../widgets/product_image.dart';
 import 'dart:async';
 
 class MarketScreen extends StatefulWidget {
@@ -38,6 +39,7 @@ class _MarketScreenState extends State<MarketScreen> {
   List<ProductModel> _products = [];
   bool _isLoading = true;
   late StreamSubscription _socketSub;
+  StreamSubscription? _stockSub;
 
   // Category scroll controller for indicator
   final ScrollController _catScrollCtrl = ScrollController();
@@ -66,6 +68,23 @@ class _MarketScreenState extends State<MarketScreen> {
     SocketService().connect();
     _socketSub = SocketService().marketplaceStream.listen((event) {
       _loadProducts();
+    });
+
+    _stockSub = SocketService().stockStream.listen((data) {
+      final pId = data['productId'];
+      final newStk = data['stock'];
+      final isAvail = data['isAvailable'] ?? ((newStk is num) ? newStk > 0 : true);
+      if (pId != null && newStk != null && mounted) {
+        setState(() {
+          final idx = _products.indexWhere((p) => p.id == pId);
+          if (idx != -1) {
+            _products[idx] = _products[idx].copyWith(
+              stock: (newStk as num).toInt(),
+              isAvailable: isAvail == true,
+            );
+          }
+        });
+      }
     });
   }
 
@@ -104,6 +123,7 @@ class _MarketScreenState extends State<MarketScreen> {
   @override
   void dispose() {
     _socketSub.cancel();
+    _stockSub?.cancel();
     _searchController.dispose();
     _catScrollCtrl.dispose();
     super.dispose();
@@ -557,6 +577,7 @@ class _MarketScreenState extends State<MarketScreen> {
   Widget _buildProductCard(ProductModel product, int index, CartProvider cart, FavoritesProvider favorites) {
     final inCart = cart.isInCart(product.id);
     final isFav = favorites.isFavorite(product.id);
+    final bool isOutOfStock = product.stock <= 0 || !product.isAvailable;
     final sellerDisplayName = product.sellerName.isNotEmpty ? product.sellerName : 'Plantora Verified';
 
     return GestureDetector(
@@ -566,10 +587,12 @@ class _MarketScreenState extends State<MarketScreen> {
           color: context.cardBg,
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
-            color: Theme.of(context).brightness == Brightness.dark
-                ? Colors.white.withValues(alpha: 0.1)
-                : Colors.black.withValues(alpha: 0.05),
-            width: 1,
+            color: isOutOfStock
+                ? Colors.redAccent.withOpacity(0.3)
+                : (Theme.of(context).brightness == Brightness.dark
+                    ? Colors.white.withValues(alpha: 0.1)
+                    : Colors.black.withValues(alpha: 0.05)),
+            width: isOutOfStock ? 1.4 : 1,
           ),
           boxShadow: [
             BoxShadow(
@@ -585,79 +608,71 @@ class _MarketScreenState extends State<MarketScreen> {
             children: [
               // Product image full size
               Positioned.fill(
-                child: product.imageUrl.isNotEmpty
-                    ? Image.network(
-                        product.imageUrl.startsWith('http')
-                            ? product.imageUrl
-                            : '${AppConfig.baseUrl}${product.imageUrl}',
-                        fit: BoxFit.cover,
-                        loadingBuilder: (context, child, progress) {
-                          if (progress == null) return child;
-                          return Container(
-                            color: Theme.of(context).brightness == Brightness.dark
-                                ? const Color(0xFF0F291E)
-                                : const Color(0xFFE8F5E9),
-                            child: const Center(
-                              child: SizedBox(
-                                width: 22,
-                                height: 22,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Color(0xFF10B981),
-                                ),
-                              ),
-                            ),
-                          );
-                        },
-                        errorBuilder: (context, error, stackTrace) => Container(
-                          color: Theme.of(context).brightness == Brightness.dark
-                              ? const Color(0xFF0F291E)
-                              : const Color(0xFFE8F5E9),
-                          child: const Center(
-                            child: Icon(Icons.eco_rounded, size: 44, color: Color(0xFF10B981)),
-                          ),
-                        ),
-                      )
-                    : Container(
-                        color: Theme.of(context).brightness == Brightness.dark
-                            ? const Color(0xFF0F291E)
-                            : const Color(0xFFE8F5E9),
-                        child: const Center(
-                          child: Icon(Icons.eco_rounded, size: 44, color: Color(0xFF10B981)),
-                        ),
-                      ),
+                child: ProductImage(
+                  imageUrl: product.imageUrl,
+                  emoji: product.emoji,
+                  fit: BoxFit.cover,
+                  emojiSize: 44,
+                ),
               ),
 
-              // Top Left: Category Badge Pill
+              // Top Left: Category Badge Pill & Out of Stock Pill
               Positioned(
                 top: 10,
                 left: 10,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.45),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                      color: Colors.white.withValues(alpha: 0.2),
-                      width: 0.8,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.45),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.2),
+                          width: 0.8,
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.eco_rounded, color: Color(0xFF34D399), size: 10),
+                          const SizedBox(width: 4),
+                          Text(
+                            context.watch<LocalizationProvider>().translate(product.category).toUpperCase(),
+                            style: GoogleFonts.inter(
+                              fontSize: 9,
+                              fontWeight: FontWeight.w700,
+                              color: Colors.white,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.eco_rounded, color: Color(0xFF34D399), size: 10),
-                      const SizedBox(width: 4),
-                      Text(
-                        context.watch<LocalizationProvider>().translate(product.category).toUpperCase(),
-                        style: GoogleFonts.inter(
-                          fontSize: 9,
-                          fontWeight: FontWeight.w700,
-                          color: Colors.white,
-                          letterSpacing: 0.5,
+                    if (isOutOfStock) ...[
+                      const SizedBox(height: 4),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: Colors.redAccent.withOpacity(0.92),
+                          borderRadius: BorderRadius.circular(6),
+                          boxShadow: [
+                            BoxShadow(color: Colors.black.withOpacity(0.2), blurRadius: 4),
+                          ],
+                        ),
+                        child: Text(
+                          'OUT OF STOCK',
+                          style: GoogleFonts.inter(
+                            fontSize: 8.5,
+                            fontWeight: FontWeight.w900,
+                            color: Colors.white,
+                            letterSpacing: 0.3,
+                          ),
                         ),
                       ),
                     ],
-                  ),
+                  ],
                 ),
               ),
 
@@ -785,7 +800,33 @@ class _MarketScreenState extends State<MarketScreen> {
                           // Add to cart button with bounce animation
                           _CartButton(
                             inCart: inCart,
+                            isOutOfStock: isOutOfStock,
                             onTap: () {
+                              if (isOutOfStock) {
+                                ScaffoldMessenger.of(context).clearSnackBars();
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Row(
+                                      children: [
+                                        const Icon(Icons.do_not_disturb_on_rounded, color: Colors.white, size: 18),
+                                        const SizedBox(width: 8),
+                                        Expanded(
+                                          child: Text(
+                                            '${product.title} is OUT OF STOCK. Restocking soon!',
+                                            style: const TextStyle(fontWeight: FontWeight.w600),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    backgroundColor: Colors.redAccent,
+                                    duration: const Duration(seconds: 2),
+                                    behavior: SnackBarBehavior.floating,
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  ),
+                                );
+                                return;
+                              }
+
                               if (inCart) {
                                 cart.removeItem(product.id);
                                 ScaffoldMessenger.of(context).showSnackBar(
@@ -891,7 +932,7 @@ class _MarketScreenState extends State<MarketScreen> {
         product.sellerAvatar,
       );
 
-      final chatId = chatData?['id'] ?? 'chat_${effectiveUser.id}_$targetSellerId';
+      final chatId = (chatData?['chatId'] ?? chatData?['id'] ?? 'chat_${effectiveUser.id}_$targetSellerId').toString();
 
       if (mounted) {
         Navigator.push(
@@ -900,6 +941,10 @@ class _MarketScreenState extends State<MarketScreen> {
             builder: (_) => ChatDetailScreen(
               chatId: chatId,
               otherParticipantName: targetSellerName,
+              otherParticipantRole: 'Seller',
+              plantTitle: product.title,
+              plantPrice: product.price.toStringAsFixed(0),
+              plantImageUrl: product.imageUrl,
             ),
           ),
         );
@@ -912,6 +957,10 @@ class _MarketScreenState extends State<MarketScreen> {
             builder: (_) => ChatDetailScreen(
               chatId: 'chat_${effectiveUser.id}_$targetSellerId',
               otherParticipantName: targetSellerName,
+              otherParticipantRole: 'Seller',
+              plantTitle: product.title,
+              plantPrice: product.price.toStringAsFixed(0),
+              plantImageUrl: product.imageUrl,
             ),
           ),
         );
@@ -959,38 +1008,12 @@ class _MarketScreenState extends State<MarketScreen> {
                             child: SizedBox(
                               height: 270,
                               width: double.infinity,
-                              child: product.imageUrl.isNotEmpty
-                                  ? Image.network(
-                                      product.imageUrl.startsWith('http')
-                                          ? product.imageUrl
-                                          : '${AppConfig.baseUrl}${product.imageUrl}',
-                                      fit: BoxFit.cover,
-                                      loadingBuilder: (c, child, progress) {
-                                        if (progress == null) return child;
-                                        return Container(
-                                          color: context.isDark ? const Color(0xFF0F291E) : const Color(0xFFE8F5E9),
-                                          child: const Center(
-                                            child: SizedBox(
-                                              width: 24,
-                                              height: 24,
-                                              child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF10B981)),
-                                            ),
-                                          ),
-                                        );
-                                      },
-                                      errorBuilder: (context, error, stackTrace) => Container(
-                                        color: context.isDark ? const Color(0xFF0F291E) : const Color(0xFFE8F5E9),
-                                        child: const Center(
-                                          child: Icon(Icons.eco_rounded, size: 70, color: Color(0xFF10B981)),
-                                        ),
-                                      ),
-                                    )
-                                  : Container(
-                                      color: context.isDark ? const Color(0xFF0F291E) : const Color(0xFFE8F5E9),
-                                      child: const Center(
-                                        child: Icon(Icons.eco_rounded, size: 70, color: Color(0xFF10B981)),
-                                      ),
-                                    ),
+                              child: ProductImage(
+                                imageUrl: product.imageUrl,
+                                emoji: product.emoji,
+                                fit: BoxFit.cover,
+                                emojiSize: 70,
+                              ),
                             ),
                           ),
 
@@ -1142,6 +1165,53 @@ class _MarketScreenState extends State<MarketScreen> {
                                     ],
                                   ),
                                 ),
+                                const SizedBox(width: 8),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                  decoration: BoxDecoration(
+                                    color: (product.stock <= 0 || !product.isAvailable)
+                                        ? Colors.redAccent.withOpacity(0.12)
+                                        : (product.stock <= 3
+                                            ? const Color(0xFFF59E0B).withOpacity(0.14)
+                                            : AppColors.primaryGreen.withOpacity(0.1)),
+                                    borderRadius: BorderRadius.circular(16),
+                                    border: Border.all(
+                                      color: (product.stock <= 0 || !product.isAvailable)
+                                          ? Colors.redAccent.withOpacity(0.35)
+                                          : (product.stock <= 3
+                                              ? const Color(0xFFF59E0B).withOpacity(0.4)
+                                              : AppColors.primaryGreen.withOpacity(0.25)),
+                                      width: 1,
+                                    ),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        (product.stock <= 0 || !product.isAvailable)
+                                            ? Icons.cancel_rounded
+                                            : (product.stock <= 3 ? Icons.warning_amber_rounded : Icons.inventory_2_rounded),
+                                        color: (product.stock <= 0 || !product.isAvailable)
+                                            ? Colors.redAccent
+                                            : (product.stock <= 3 ? const Color(0xFFF59E0B) : AppColors.primaryGreen),
+                                        size: 13,
+                                      ),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        (product.stock <= 0 || !product.isAvailable)
+                                            ? 'Out of Stock'
+                                            : (product.stock <= 3 ? 'Only ' + product.stock.toString() + ' Left' : product.stock.toString() + ' in Stock'),
+                                        style: GoogleFonts.inter(
+                                          fontSize: 11.5,
+                                          fontWeight: FontWeight.w700,
+                                          color: (product.stock <= 0 || !product.isAvailable)
+                                              ? Colors.redAccent
+                                              : (product.stock <= 3 ? const Color(0xFFF59E0B) : AppColors.primaryGreen),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
                               ],
                             ),
 
@@ -1186,13 +1256,15 @@ class _MarketScreenState extends State<MarketScreen> {
                                   CircleAvatar(
                                     radius: 22,
                                     backgroundColor: AppColors.primaryGreen,
-                                    backgroundImage: product.sellerAvatar != null
+                                    backgroundImage: (product.sellerAvatar != null && 
+                                        !product.sellerAvatar!.startsWith('data:image'))
                                         ? NetworkImage(
                                             product.sellerAvatar!.startsWith('http')
                                                 ? product.sellerAvatar!
                                                 : '${AppConfig.baseUrl}${product.sellerAvatar}')
                                         : null,
-                                    child: product.sellerAvatar == null
+                                    child: (product.sellerAvatar == null ||
+                                        product.sellerAvatar!.startsWith('data:image'))
                                         ? Text(
                                             product.sellerName.isNotEmpty
                                                 ? product.sellerName.substring(0, 1).toUpperCase()
@@ -1203,6 +1275,7 @@ class _MarketScreenState extends State<MarketScreen> {
                                   ),
                                   const SizedBox(width: 12),
                                   Expanded(
+
                                     child: Column(
                                       crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
@@ -1387,8 +1460,34 @@ class _MarketScreenState extends State<MarketScreen> {
                             ),
                             const SizedBox(width: 12),
                           ],
-                          Tooltip(
-                            message: inCart ? 'Remove from Cart' : 'Add to Cart',
+                          if (product.stock <= 0 || !product.isAvailable)
+                            Container(
+                              height: 50,
+                              padding: const EdgeInsets.symmetric(horizontal: 14),
+                              decoration: BoxDecoration(
+                                color: Colors.redAccent.withOpacity(0.12),
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(color: Colors.redAccent.withOpacity(0.35)),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.do_not_disturb_on_rounded, color: Colors.redAccent, size: 18),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    'OUT OF STOCK',
+                                    style: GoogleFonts.inter(
+                                      color: Colors.redAccent,
+                                      fontWeight: FontWeight.w800,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            )
+                          else
+                            Tooltip(
+                              message: inCart ? 'Remove from Cart' : 'Add to Cart',
                             child: SizedBox(
                               width: 56,
                               height: 50,
@@ -1507,8 +1606,9 @@ class _MarketScreenState extends State<MarketScreen> {
 // ── Bouncy Cart Button ────────────────────────────────────────────────────────
 class _CartButton extends StatefulWidget {
   final bool inCart;
+  final bool isOutOfStock;
   final VoidCallback onTap;
-  const _CartButton({required this.inCart, required this.onTap});
+  const _CartButton({required this.inCart, required this.onTap, this.isOutOfStock = false});
 
   @override
   State<_CartButton> createState() => _CartButtonState();
@@ -1551,20 +1651,31 @@ class _CartButtonState extends State<_CartButton> with SingleTickerProviderState
           width: 34,
           height: 34,
           decoration: BoxDecoration(
-            color: widget.inCart ? const Color(0xFF22C55E) : Colors.white,
+            color: widget.isOutOfStock
+                ? Colors.redAccent.withOpacity(0.18)
+                : (widget.inCart ? const Color(0xFF22C55E) : Colors.white),
             borderRadius: BorderRadius.circular(10),
+            border: widget.isOutOfStock
+                ? Border.all(color: Colors.redAccent.withOpacity(0.4), width: 1)
+                : null,
             boxShadow: [
               BoxShadow(
-                color: widget.inCart
-                    ? const Color(0xFF22C55E).withValues(alpha: 0.4)
-                    : Colors.black.withValues(alpha: 0.1),
+                color: widget.isOutOfStock
+                    ? Colors.redAccent.withOpacity(0.2)
+                    : (widget.inCart
+                        ? const Color(0xFF22C55E).withValues(alpha: 0.4)
+                        : Colors.black.withValues(alpha: 0.1)),
                 blurRadius: 8,
               ),
             ],
           ),
           child: Icon(
-            widget.inCart ? Icons.check_rounded : Icons.add_shopping_cart_rounded,
-            color: widget.inCart ? Colors.white : Colors.black87,
+            widget.isOutOfStock
+                ? Icons.do_not_disturb_on_rounded
+                : (widget.inCart ? Icons.check_rounded : Icons.add_shopping_cart_rounded),
+            color: widget.isOutOfStock
+                ? Colors.redAccent
+                : (widget.inCart ? Colors.white : Colors.black87),
             size: 17,
           ),
         ),

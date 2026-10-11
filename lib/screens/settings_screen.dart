@@ -8,6 +8,7 @@ import '../theme/app_theme.dart';
 import '../providers/theme_provider.dart';
 import '../providers/auth_provider.dart';
 import '../providers/notification_provider.dart';
+import '../providers/localization_provider.dart';
 import 'settings/change_password_screen.dart';
 import 'settings/payment_methods_screen.dart';
 import 'settings/info_screen.dart';
@@ -28,13 +29,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final isDark = context.watch<ThemeProvider>().isDarkMode;
     final user = context.watch<AuthProvider>().user;
     final notificationsEnabled = context.watch<NotificationProvider>().notificationsEnabled;
+    final loc = context.watch<LocalizationProvider>();
+
+    final langName = loc.locale.languageCode == 'si'
+        ? 'සිංහල'
+        : (loc.locale.languageCode == 'ta' ? 'தமிழ்' : 'English');
 
     return Scaffold(
       backgroundColor: context.scaffoldBg,
       drawer: const AppDrawer(),
-      appBar: const PremiumAppBar(
-        title: 'Settings',
-        subtitle: 'Manage your preferences & privacy',
+      appBar: PremiumAppBar(
+        title: loc.translate('settings'),
+        subtitle: loc.translate('app_preferences'),
         showMenuButton: true,
       ),
       body: SingleChildScrollView(
@@ -46,14 +52,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               // Account Section
-              _buildSectionHeader(context, 'Account & Security'),
+              _buildSectionHeader(context, loc.translate('account_security')),
               _buildSectionCard(context, [
                 _buildSettingsTile(
                   context: context,
                   icon: Icons.person_outline_rounded,
                   iconColor: const Color(0xFF10B981),
-                  title: 'Edit Profile',
-                  subtitle: 'Name, email & profile photo',
+                  title: loc.translate('edit_profile'),
+                  subtitle: loc.translate('personal_details'),
                   onTap: () => Navigator.pushNamed(context, '/edit-profile'),
                   showDivider: true,
                 ),
@@ -61,8 +67,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   context: context,
                   icon: Icons.lock_outline_rounded,
                   iconColor: const Color(0xFFF59E0B),
-                  title: 'Change Password',
-                  subtitle: 'Update account password',
+                  title: loc.translate('change_password'),
+                  subtitle: loc.translate('change_password'),
                   onTap: () => Navigator.push(
                     context,
                     MaterialPageRoute(builder: (_) => const ChangePasswordScreen()),
@@ -73,8 +79,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   context: context,
                   icon: Icons.credit_card_rounded,
                   iconColor: const Color(0xFF6366F1),
-                  title: 'Payment Methods',
-                  subtitle: 'Saved cards & payment preferences',
+                  title: loc.translate('payment_methods'),
+                  subtitle: loc.translate('payment_methods'),
                   onTap: () => Navigator.push(
                     context,
                     MaterialPageRoute(builder: (_) => const PaymentMethodsScreen()),
@@ -84,13 +90,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ]),
 
               // Preferences Section
-              _buildSectionHeader(context, 'App Preferences'),
+              _buildSectionHeader(context, loc.translate('app_preferences')),
               _buildSectionCard(context, [
                 _buildSwitchTile(
                   context: context,
                   icon: Icons.notifications_active_rounded,
                   iconColor: const Color(0xFFEC4899),
-                  title: 'Push Notifications',
+                  title: loc.translate('push_notifications'),
                   value: notificationsEnabled,
                   onChanged: (val) => context.read<NotificationProvider>().toggleNotifications(val),
                   showDivider: true,
@@ -99,7 +105,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   context: context,
                   icon: Icons.dark_mode_rounded,
                   iconColor: const Color(0xFF3B82F6),
-                  title: 'Dark Mode',
+                  title: loc.translate('dark_mode'),
                   value: isDark,
                   onChanged: (val) => context.read<ThemeProvider>().toggleTheme(),
                   showDivider: true,
@@ -108,21 +114,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   context: context,
                   icon: Icons.language_rounded,
                   iconColor: const Color(0xFF10B981),
-                  title: 'Language',
-                  subtitle: 'English',
+                  title: loc.translate('language'),
+                  subtitle: langName,
                   onTap: () => Navigator.pushNamed(context, '/language'),
                   showDivider: false,
                 ),
               ]),
 
               // Support & Legal Section
-              _buildSectionHeader(context, 'Support & Legal'),
+              _buildSectionHeader(context, loc.translate('support_legal')),
               _buildSectionCard(context, [
                 _buildSettingsTile(
                   context: context,
                   icon: Icons.shield_outlined,
                   iconColor: const Color(0xFF14B8A6),
-                  title: 'Privacy Policy',
+                  title: loc.translate('privacy_policy'),
                   onTap: () => Navigator.push(
                     context,
                     MaterialPageRoute(
@@ -135,7 +141,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   context: context,
                   icon: Icons.description_outlined,
                   iconColor: const Color(0xFF64748B),
-                  title: 'Terms of Service',
+                  title: loc.translate('terms_of_service'),
                   onTap: () => Navigator.push(
                     context,
                     MaterialPageRoute(
@@ -148,8 +154,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   context: context,
                   icon: Icons.help_center_outlined,
                   iconColor: const Color(0xFF0EA5E9),
-                  title: 'Help Center',
-                  subtitle: 'FAQs & customer support',
+                  title: loc.translate('help_center'),
+                  subtitle: loc.translate('help_center'),
                   onTap: () => Navigator.push(
                     context,
                     MaterialPageRoute(
@@ -161,7 +167,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ]),
 
               // Logout & Version Footer
-              _buildLogoutSection(context),
+              _buildLogoutSection(context, loc),
             ],
           ),
         ),
@@ -346,19 +352,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Widget _buildLogoutSection(BuildContext context) {
+  Widget _buildLogoutSection(BuildContext context, LocalizationProvider loc) {
     return Column(
       children: [
         Container(
           width: double.infinity,
           margin: const EdgeInsets.only(bottom: 20),
           child: OutlinedButton.icon(
-            onPressed: () => _showLogoutConfirmation(context),
+            onPressed: () => _showLogoutConfirmation(context, loc),
             icon: const Icon(Icons.logout_rounded, color: Colors.redAccent, size: 20),
             label: Text(
-              'Log Out',
+              loc.translate('log_out'),
               style: GoogleFonts.inter(
-                color: Colors.redAccent,
+                 color: Colors.redAccent,
                 fontSize: 15,
                 fontWeight: FontWeight.w700,
               ),
@@ -391,7 +397,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  void _showLogoutConfirmation(BuildContext context) {
+  void _showLogoutConfirmation(BuildContext context, LocalizationProvider loc) {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -402,7 +408,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const Icon(Icons.logout_rounded, color: Colors.redAccent),
             const SizedBox(width: 10),
             Text(
-              'Log Out',
+              loc.translate('log_out'),
               style: GoogleFonts.outfit(
                 fontWeight: FontWeight.bold,
                 color: context.textPrimary,
@@ -411,14 +417,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ],
         ),
         content: Text(
-          'Are you sure you want to log out of your Plantora account?',
+          loc.translate('logout'),
           style: GoogleFonts.inter(color: context.textSecondary),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
             child: Text(
-              'Cancel',
+              loc.translate('cancel'),
               style: GoogleFonts.inter(color: context.textSecondary),
             ),
           ),
@@ -438,7 +444,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               }
             },
             child: Text(
-              'Log Out',
+              loc.translate('log_out'),
               style: GoogleFonts.inter(
                 color: Colors.white,
                 fontWeight: FontWeight.bold,

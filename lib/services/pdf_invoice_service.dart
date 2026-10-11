@@ -30,6 +30,12 @@ class PdfInvoiceService {
         pageFormat: PdfPageFormat.a4,
         margin: const pw.EdgeInsets.all(32),
         build: (pw.Context context) {
+          final createdLocal = order.createdAt.toLocal();
+          final hour12 = createdLocal.hour == 0 ? 12 : (createdLocal.hour > 12 ? createdLocal.hour - 12 : createdLocal.hour);
+          final ampm = createdLocal.hour >= 12 ? "PM" : "AM";
+          final min = createdLocal.minute.toString().padLeft(2, '0');
+          final formattedDateTime = '${createdLocal.day.toString().padLeft(2, '0')}/${createdLocal.month.toString().padLeft(2, '0')}/${createdLocal.year} $hour12:$min $ampm';
+
           return pw.Column(
             crossAxisAlignment: pw.CrossAxisAlignment.start,
             children: [
@@ -80,7 +86,7 @@ class PdfInvoiceService {
                         ),
                       ),
                       pw.Text(
-                        'Date: ${order.createdAt.toString().split('.')[0]}',
+                        'Date & Time: $formattedDateTime',
                         style: pw.TextStyle(
                           font: fontRegular,
                           fontSize: 10,
@@ -231,7 +237,7 @@ class PdfInvoiceService {
               pw.SizedBox(height: 8),
               pw.Center(
                 child: pw.Text(
-                  'Thank you for shopping with Plantora! For inquiries, email support@plantora.com',
+                  'Thank you for shopping with Plantora! For inquiries, email supportplantora@gmail.com',
                   style: pw.TextStyle(font: fontRegular, fontSize: 9, color: PdfColor.fromHex('#9CA3AF')),
                 ),
               ),

@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../widgets/premium_app_bar.dart';
 import '../theme/app_theme.dart';
 import '../providers/localization_provider.dart';
+import '../providers/auth_provider.dart';
 
 class LanguageScreen extends StatefulWidget {
   const LanguageScreen({super.key});
@@ -111,6 +112,29 @@ class _LanguageScreenState extends State<LanguageScreen> {
                           onTap: () async {
                             HapticFeedback.selectionClick();
                             await loc.setLocale(Locale(lang['code']!));
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).clearSnackBars();
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Row(
+                                    children: [
+                                      Text(lang['flag']!, style: const TextStyle(fontSize: 18)),
+                                      const SizedBox(width: 10),
+                                      Expanded(
+                                        child: Text(
+                                          loc.translate('language_updated'),
+                                          style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13.5),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  backgroundColor: const Color(0xFF10B981),
+                                  duration: const Duration(seconds: 2),
+                                  behavior: SnackBarBehavior.floating,
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                ),
+                              );
+                            }
                           },
                           child: AnimatedContainer(
                             duration: const Duration(milliseconds: 250),
@@ -270,7 +294,14 @@ class _LanguageScreenState extends State<LanguageScreen> {
                           if (Navigator.canPop(context)) {
                             Navigator.pop(context);
                           } else {
-                            Navigator.pushReplacementNamed(context, '/home');
+                            final role = context.read<AuthProvider>().user?.role;
+                            if (role == 'Driver') {
+                              Navigator.pushReplacementNamed(context, '/driver-dashboard');
+                            } else if (role == 'Seller') {
+                              Navigator.pushReplacementNamed(context, '/seller-dashboard');
+                            } else {
+                              Navigator.pushReplacementNamed(context, '/home');
+                            }
                           }
                         },
                         style: ElevatedButton.styleFrom(

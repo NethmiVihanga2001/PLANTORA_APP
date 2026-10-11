@@ -77,61 +77,31 @@ class _SellerOffersScreenState extends State<SellerOffersScreen> {
     try {
       final user = await AuthService().getCurrentUser();
       if (user == null) {
-        _setSampleAds();
+        if (mounted) setState(() => _ads = []);
         return;
       }
       
       final token = await AuthService().getToken();
       final response = await http.get(
         Uri.parse('${AppConfig.baseUrl}/ads/${user.id}'),
-        headers: {'Authorization': 'Bearer $token'},
-      ).timeout(const Duration(seconds: 3));
+        headers: AppConfig.headers({'Authorization': 'Bearer $token'}),
+      ).timeout(const Duration(seconds: 5));
 
       if (response.statusCode == 200) {
         final List<dynamic> decoded = json.decode(response.body);
-        if (decoded.isNotEmpty) {
+        if (mounted) {
           setState(() => _ads = decoded);
-        } else {
-          _setSampleAds();
         }
       } else {
-        _setSampleAds();
+        debugPrint('Failed to load ads: ${response.statusCode}');
+        if (mounted) setState(() => _ads = []);
       }
     } catch (e) {
       debugPrint('Error fetching ads: $e');
-      _setSampleAds();
+      if (mounted) setState(() => _ads = []);
     } finally {
       if (mounted) setState(() => _isLoadingAds = false);
     }
-  }
-
-  void _setSampleAds() {
-    _ads = [
-      {
-        'id': 'ad_sample_1',
-        'title': 'Monsoon Botanical Clearance Sale',
-        'discountPercentage': 25,
-        'description': 'Enjoy 25% off all indoor ceramic potted plants & succulents!',
-        'validity': 'Valid till Oct 31, 2026',
-        'colorHex': '0xFF012E23',
-        'colorHexSecondary': '0xFF10B981',
-        'status': 'Active',
-        'views': 412,
-        'redemptions': 38,
-      },
-      {
-        'id': 'ad_sample_2',
-        'title': 'Weekend Rare Plant Special',
-        'discountPercentage': 15,
-        'description': 'Special discount on variegated Monsteras & Philodendrons.',
-        'validity': 'Valid this weekend only',
-        'colorHex': '0xFF5B21B6',
-        'colorHexSecondary': '0xFF8B5CF6',
-        'status': 'Active',
-        'views': 285,
-        'redemptions': 19,
-      },
-    ];
   }
 
   Future<void> _createAd() async {
@@ -142,10 +112,10 @@ class _SellerOffersScreenState extends State<SellerOffersScreen> {
       final token = await AuthService().getToken();
       final response = await http.post(
         Uri.parse('${AppConfig.baseUrl}/seller/ads'),
-        headers: {
+        headers: AppConfig.headers({
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $token',
-        },
+        }),
         body: json.encode({
           'title': _titleCtrl.text,
           'discountPercentage': int.parse(_discountCtrl.text),
@@ -161,33 +131,41 @@ class _SellerOffersScreenState extends State<SellerOffersScreen> {
         _resetForm();
         _fetchAds();
       } else {
-        _addLocalAd();
+        debugPrint('Failed to create ad: ${response.body}');
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to create campaign')));
       }
     } catch (e) {
-      _addLocalAd();
+      debugPrint('Error creating ad: $e');
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Network error creating campaign')));
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
   }
 
-  void _addLocalAd() {
-    final newAd = {
-      'id': 'ad_${DateTime.now().millisecondsSinceEpoch}',
-      'title': _titleCtrl.text,
-      'discountPercentage': int.tryParse(_discountCtrl.text) ?? 10,
-      'description': _descCtrl.text.isEmpty ? 'Special discount offer on plant products.' : _descCtrl.text,
-      'validity': _validityCtrl.text.isEmpty ? 'Valid for 7 days' : _validityCtrl.text,
-      'colorHex': _selectedColorHex,
-      'colorHexSecondary': _selectedColorHexSecondary,
-      'status': 'Active',
-      'views': 1,
-      'redemptions': 0,
-    };
-    setState(() {
-      _ads.insert(0, newAd);
-    });
-    _showSuccessSnackBar('Promotion Banner Published Live!');
-    _resetForm();
+  Future<void> _deleteAd(String adId) async {
+    try {
+      final token = await AuthService().getToken();
+      final response = await http.delete(
+        Uri.parse('${AppConfig.baseUrl}/seller/ads/$adId'),
+        headers: AppConfig.headers({'Authorization': 'Bearer $token'}),
+      );
+
+      if (response.statusCode == 200) {
+        _fetchAds();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Campaign removed')),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to delete campaign')),
+        );
+      }
+    } catch (e) {
+      debugPrint('Error deleting ad: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Network error deleting campaign')),
+      );
+    }
   }
 
   void _resetForm() {
@@ -832,12 +810,7 @@ class _SellerOffersScreenState extends State<SellerOffersScreen> {
                         IconButton(
                           icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 20),
                           onPressed: () {
-                            setState(() {
-                              _ads.removeAt(index);
-                            });
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('Campaign removed')),
-                            );
+                            _deleteAd(ad['id']);
                           },
                         ),
                       ],

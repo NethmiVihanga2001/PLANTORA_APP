@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -6,6 +7,7 @@ import '../widgets/premium_app_bar.dart';
 import '../widgets/app_drawer.dart';
 import '../services/chat_service.dart';
 import '../services/auth_service.dart';
+import '../services/socket_service.dart';
 import '../models/user_model.dart';
 import '../theme/app_theme.dart';
 import '../config/app_config.dart';
@@ -31,17 +33,19 @@ class _ChatListScreenState extends State<ChatListScreen> {
   String _searchQuery = '';
   String _selectedCategory = 'All'; // 'All', 'Sellers', 'Delivery', 'AI', 'Unread'
   final TextEditingController _searchController = TextEditingController();
+  StreamSubscription? _chatSub;
 
   // Split-pane active selection
   String? _selectedChatId;
   String? _selectedOtherParticipantName;
 
-
-
   @override
   void initState() {
     super.initState();
     _loadChats();
+    _chatSub = SocketService().chatStream.listen((_) {
+      if (mounted) _loadChats();
+    });
   }
 
   Future<void> _loadChats() async {
@@ -49,89 +53,32 @@ class _ChatListScreenState extends State<ChatListScreen> {
     _currentUser = await _authService.getCurrentUser();
     if (_currentUser != null) {
       final fetched = await _chatService.getUserChats(_currentUser!.id);
-      _chats = fetched;
-    }
-
-    // Enhance loaded chats with realistic fallbacks if empty or partial
-    if (_chats.isEmpty) {
-      _chats = _getFallbackChats();
+      _chats = _enrichChats(fetched);
     } else {
-      _chats = _enrichChats(_chats);
+      _chats = [];
     }
 
-    setState(() => _isLoading = false);
-  }
-
-  List<dynamic> _getFallbackChats() {
-    return [
-      {
-        'id': 'ai_bot_chat',
-        'customerId': _currentUser?.id ?? 'user1',
-        'sellerName': 'Plantora AI Assistant',
-        'customerName': _currentUser?.name ?? 'Me',
-        'lastMessage': 'Hello! I can help identify your plant disease or give care tips.',
-        'lastMessageTime': DateTime.now().subtract(const Duration(minutes: 12)).toIso8601String(),
-        'unreadCount': 1,
-        'role': 'AI',
-        'isOnline': true,
-        'isRead': false,
-        'plantContext': 'Botanical AI Support',
-      },
-      {
-        'id': 'seller_101',
-        'customerId': _currentUser?.id ?? 'user1',
-        'sellerName': 'Meesha Plant Nursery',
-        'customerName': _currentUser?.name ?? 'Me',
-        'lastMessage': 'Hi! Yes, the Rare Monstera Deliciosa is still in stock and ready to ship.',
-        'lastMessageTime': DateTime.now().subtract(const Duration(minutes: 45)).toIso8601String(),
-        'unreadCount': 0,
-        'role': 'Seller',
-        'isOnline': true,
-        'isRead': true,
-        'plantContext': 'Monstera Deliciosa',
-      },
-      {
-        'id': 'driver_202',
-        'customerId': _currentUser?.id ?? 'user1',
-        'sellerName': 'EcoCourier Delivery',
-        'customerName': _currentUser?.name ?? 'Me',
-        'lastMessage': 'I am near your location with your plant package. Arriving in 10 mins!',
-        'lastMessageTime': DateTime.now().subtract(const Duration(hours: 2)).toIso8601String(),
-        'unreadCount': 2,
-        'role': 'Delivery',
-        'isOnline': true,
-        'isRead': false,
-        'plantContext': 'Order #PL-8892',
-      },
-      {
-        'id': 'seller_102',
-        'customerId': _currentUser?.id ?? 'user1',
-        'sellerName': 'Green Terra Organics',
-        'customerName': _currentUser?.name ?? 'Me',
-        'lastMessage': 'Thank you for your order! Let me know if you need care instructions.',
-        'lastMessageTime': DateTime.now().subtract(const Duration(days: 1)).toIso8601String(),
-        'unreadCount': 0,
-        'role': 'Seller',
-        'isOnline': false,
-        'isRead': true,
-        'plantContext': 'Organic Fertilizer',
-      },
-    ];
+    if (mounted) {
+      setState(() => _isLoading = false);
+    }
   }
 
   List<dynamic> _enrichChats(List<dynamic> rawChats) {
     return rawChats.map((c) {
-      final chatId = (c['id'] ?? c['chatId'] ?? c['_id'] ?? 'chat_${DateTime.now().millisecondsSinceEpoch}').toString();
-      final name = (c['sellerName'] ?? c['customerName'] ?? 'Plantora User').toString();
-      final role = name.toLowerCase().contains('driver') || name.toLowerCase().contains('courier')
-          ? 'Delivery'
-          : (name.toLowerCase().contains('ai') || name.toLowerCase().contains('bot') ? 'AI' : 'Seller');
+      final chatId = (c['id'] ?? c['chatId'] ?? c['_id'] ?? '').toString();
+      final isCustomer = _currentUser?.id == c['customerId'];
+      final otherName = (isCustomer ? c['sellerName'] : c['customerName']) ?? 'Plantora User';
+      final otherAvatar = isCustomer ? c['sellerAvatar'] : c['customerAvatar'];
+      final String otherRole = isCustomer ? 'Seller' : 'Customer';
+
       return {
         ...c,
         'id': chatId,
         'chatId': chatId,
+        'displayName': otherName,
+        'displayAvatar': otherAvatar,
+        'role': c['role'] ?? otherRole,
         'unreadCount': c['unreadCount'] ?? 0,
-        'role': c['role'] ?? role,
         'isOnline': c['isOnline'] ?? true,
         'isRead': c['isRead'] ?? true,
       };
@@ -140,6 +87,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
 
   @override
   void dispose() {
+    _chatSub?.cancel();
     _searchController.dispose();
     super.dispose();
   }
@@ -730,10 +678,10 @@ class _ChatListScreenState extends State<ChatListScreen> {
   Widget _buildChatCard(dynamic chat, {required bool isMobile}) {
     final isDark = context.isDark;
     final isCustomer = _currentUser?.id == chat['customerId'];
-    final otherName = (isCustomer ? chat['sellerName'] : chat['customerName']) ?? 'Plantora User';
-    final otherAvatar = isCustomer ? chat['sellerAvatar'] : null;
+    final otherName = (chat['displayName'] ?? (isCustomer ? chat['sellerName'] : chat['customerName']) ?? 'Plantora User').toString();
+    final otherAvatar = chat['displayAvatar'] ?? (isCustomer ? chat['sellerAvatar'] : chat['customerAvatar']);
     final isSelected = _selectedChatId == chat['id'];
-    final role = (chat['role'] ?? 'Seller').toString();
+    final role = (chat['role'] ?? (isCustomer ? 'Seller' : 'Customer')).toString();
     final unreadCount = (chat['unreadCount'] as int?) ?? 0;
     final isUnread = unreadCount > 0 || (chat['isRead'] == false);
     final plantContext = chat['plantContext'] as String?;
@@ -742,11 +690,17 @@ class _ChatListScreenState extends State<ChatListScreen> {
     String timeStr = 'Just now';
     try {
       if (chat['lastMessageTime'] != null) {
-        final dt = DateTime.parse(chat['lastMessageTime']);
+        final dt = DateTime.parse(chat['lastMessageTime'].toString()).toLocal();
         final now = DateTime.now();
-        if (now.difference(dt).inDays == 0) {
-          timeStr = '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
-        } else if (now.difference(dt).inDays == 1) {
+        final isToday = now.year == dt.year && now.month == dt.month && now.day == dt.day;
+        final yesterday = now.subtract(const Duration(days: 1));
+        final isYesterday = yesterday.year == dt.year && yesterday.month == dt.month && yesterday.day == dt.day;
+        if (isToday) {
+          final hour12 = dt.hour == 0 ? 12 : (dt.hour > 12 ? dt.hour - 12 : dt.hour);
+          final ampm = dt.hour >= 12 ? 'PM' : 'AM';
+          final min = dt.minute.toString().padLeft(2, '0');
+          timeStr = '$hour12:$min $ampm';
+        } else if (isYesterday) {
           timeStr = 'Yesterday';
         } else {
           timeStr = '${dt.day}/${dt.month}';

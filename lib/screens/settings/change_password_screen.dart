@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../widgets/premium_app_bar.dart';
 import '../../widgets/responsive_layout.dart';
 import '../../theme/app_theme.dart';
+import '../../services/auth_service.dart';
 
 class ChangePasswordScreen extends StatefulWidget {
   const ChangePasswordScreen({super.key});
@@ -11,9 +12,69 @@ class ChangePasswordScreen extends StatefulWidget {
 }
 
 class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
+  final _currentController = TextEditingController();
+  final _newController = TextEditingController();
+  final _confirmController = TextEditingController();
+
   bool _obscureCurrent = true;
   bool _obscureNew = true;
   bool _obscureConfirm = true;
+  bool _isLoading = false;
+
+  @override
+  void dispose() {
+    _currentController.dispose();
+    _newController.dispose();
+    _confirmController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submitChangePassword() async {
+    final current = _currentController.text.trim();
+    final newPass = _newController.text.trim();
+    final confirm = _confirmController.text.trim();
+
+    if (current.isEmpty || newPass.isEmpty || confirm.isEmpty) {
+      _showSnackBar('Please fill in all fields', isError: true);
+      return;
+    }
+
+    if (newPass != confirm) {
+      _showSnackBar('New passwords do not match', isError: true);
+      return;
+    }
+
+    final passwordRegex = RegExp(r'^(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*(),.?":{}|<>]).{7,}$');
+    if (!passwordRegex.hasMatch(newPass)) {
+      _showSnackBar('Password must be >6 chars, with a capital letter, number & symbol', isError: true);
+      return;
+    }
+
+    setState(() => _isLoading = true);
+
+    final res = await AuthService().changePassword(current, newPass);
+
+    if (mounted) {
+      setState(() => _isLoading = false);
+      if (res['success'] == true) {
+        _showSnackBar('Password updated successfully in database!');
+        Navigator.pop(context);
+      } else {
+        _showSnackBar(res['error'] ?? 'Failed to update password', isError: true);
+      }
+    }
+  }
+
+  void _showSnackBar(String msg, {bool isError = false}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        backgroundColor: isError ? AppColors.error : const Color(0xFF10B981),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -38,18 +99,21 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
               const SizedBox(height: 28),
               _buildPasswordField(
                 label: 'Current Password',
+                controller: _currentController,
                 obscure: _obscureCurrent,
                 onToggle: () => setState(() => _obscureCurrent = !_obscureCurrent),
               ),
               const SizedBox(height: 20),
               _buildPasswordField(
                 label: 'New Password',
+                controller: _newController,
                 obscure: _obscureNew,
                 onToggle: () => setState(() => _obscureNew = !_obscureNew),
               ),
               const SizedBox(height: 20),
               _buildPasswordField(
                 label: 'Confirm New Password',
+                controller: _confirmController,
                 obscure: _obscureConfirm,
                 onToggle: () => setState(() => _obscureConfirm = !_obscureConfirm),
               ),
@@ -58,23 +122,20 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
                 width: double.infinity,
                 height: 52,
                 child: ElevatedButton(
-                  onPressed: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Password updated successfully!'),
-                        backgroundColor: Color(0xFF10B981),
-                        behavior: SnackBarBehavior.floating,
-                      ),
-                    );
-                    Navigator.pop(context);
-                  },
+                  onPressed: _isLoading ? null : _submitChangePassword,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF10B981),
                     foregroundColor: Colors.white,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                     elevation: 3,
                   ),
-                  child: const Text('Update Password', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                  child: _isLoading
+                      ? const SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5),
+                        )
+                      : const Text('Update Password', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
                 ),
               ),
             ],
@@ -86,6 +147,7 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
 
   Widget _buildPasswordField({
     required String label,
+    required TextEditingController controller,
     required bool obscure,
     required VoidCallback onToggle,
   }) {
@@ -98,6 +160,7 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
         ),
         const SizedBox(height: 8),
         TextField(
+          controller: controller,
           obscureText: obscure,
           style: TextStyle(color: context.textPrimary, fontSize: 14),
           decoration: InputDecoration(

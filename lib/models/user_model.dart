@@ -22,6 +22,24 @@ class UserModel {
   bool get isSeller => role == 'Seller';
   bool get isDriver => role == 'Driver';
 
+  String get displayName {
+    final rawName = name.trim();
+    if (rawName.isNotEmpty && rawName != email) {
+      final cleaned = rawName.replaceAll(RegExp(r'\d+$'), '').replaceAll(RegExp(r'[._\-]'), ' ').trim();
+      if (cleaned.isNotEmpty && cleaned.length >= 2) {
+        return cleaned.split(' ').where((w) => w.isNotEmpty).map((w) => w[0].toUpperCase() + w.substring(1)).join(' ');
+      }
+      return rawName;
+    }
+    if (email.contains('@')) {
+      final handle = email.split('@')[0].replaceAll(RegExp(r'\d+$'), '').replaceAll(RegExp(r'[._\-]'), ' ').trim();
+      if (handle.isNotEmpty) {
+        return handle.split(' ').where((w) => w.isNotEmpty).map((w) => w[0].toUpperCase() + w.substring(1)).join(' ');
+      }
+    }
+    return 'Plant Lover';
+  }
+
   UserModel({
     required this.id,
     required this.name,
@@ -40,7 +58,7 @@ class UserModel {
     this.myListings = const [],
     this.myOrders = const [],
     required this.joinedAt,
-    this.points = 250,
+    this.points = 10,
     this.cancellationPenalty = 0.0,
   });
 
@@ -63,9 +81,9 @@ class UserModel {
       myListings: List<String>.from(map['myListings'] ?? []),
       myOrders: List<String>.from(map['myOrders'] ?? []),
       joinedAt: map['joinedAt'] != null
-          ? (map['joinedAt'] is String ? DateTime.parse(map['joinedAt']) : DateTime.now())
+          ? (map['joinedAt'] is String ? (DateTime.tryParse(map['joinedAt'])?.toLocal() ?? DateTime.now()) : DateTime.now())
           : DateTime.now(),
-      points: map['points'] ?? 250,
+      points: map['points'] ?? 10,
       cancellationPenalty: (map['cancellationPenalty'] ?? 0.0).toDouble(),
     );
   }

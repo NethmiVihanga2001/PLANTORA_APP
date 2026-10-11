@@ -173,7 +173,7 @@ class _PlantGridScreenState extends State<PlantGridScreen> {
         null,
       );
 
-      final chatId = chatData?['id'] ?? 'chat_${user.id}_$sellerId';
+      final chatId = (chatData?['chatId'] ?? chatData?['id'] ?? 'chat_${user.id}_$sellerId').toString();
 
       if (mounted) {
         Navigator.push(

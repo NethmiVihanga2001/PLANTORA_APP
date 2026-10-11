@@ -12,7 +12,7 @@ class ChatService {
       final token = await AuthService().getToken();
       final response = await http.post(
         Uri.parse('$_baseUrl/chat/initiate'),
-        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $token'},
+        headers: AppConfig.headers({'Content-Type': 'application/json', 'Authorization': 'Bearer $token'}),
         body: json.encode({
           'customerId': customerId,
           'sellerId': sellerId,
@@ -36,7 +36,7 @@ class ChatService {
       final token = await AuthService().getToken();
       final response = await http.get(
         Uri.parse('$_baseUrl/chat/user/$userId'),
-        headers: {'Authorization': 'Bearer $token'},
+        headers: AppConfig.headers({'Authorization': 'Bearer $token'}),
       );
 
       if (response.statusCode == 200) {
@@ -53,7 +53,7 @@ class ChatService {
       final token = await AuthService().getToken();
       final response = await http.get(
         Uri.parse('$_baseUrl/chat/$chatId/messages'),
-        headers: {'Authorization': 'Bearer $token'},
+        headers: AppConfig.headers({'Authorization': 'Bearer $token'}),
       );
 
       if (response.statusCode == 200) {
@@ -65,20 +65,42 @@ class ChatService {
     return [];
   }
 
-  Future<bool> sendMessage(String chatId, String senderId, String text) async {
+  Future<bool> sendMessage(String chatId, String senderId, String text, {String? senderName}) async {
     try {
       final token = await AuthService().getToken();
       final response = await http.post(
         Uri.parse('$_baseUrl/chat/$chatId/message'),
-        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $token'},
+        headers: AppConfig.headers({'Content-Type': 'application/json', 'Authorization': 'Bearer $token'}),
         body: json.encode({
           'senderId': senderId,
+          'senderName': senderName,
           'text': text,
+          'message': text,
         }),
       );
       return response.statusCode == 200;
     } catch (e) {
       print('Error sending message: $e');
+    }
+    return false;
+  }
+
+  Future<bool> sendOrderMessage(String orderId, String senderId, String text, {String? senderName}) async {
+    try {
+      final token = await AuthService().getToken();
+      final response = await http.post(
+        Uri.parse('$_baseUrl/orders/$orderId/message'),
+        headers: AppConfig.headers({'Content-Type': 'application/json', 'Authorization': 'Bearer $token'}),
+        body: json.encode({
+          'senderId': senderId,
+          'senderName': senderName,
+          'text': text,
+          'message': text,
+        }),
+      );
+      return response.statusCode == 200;
+    } catch (e) {
+      print('Error sending order message: $e');
     }
     return false;
   }
