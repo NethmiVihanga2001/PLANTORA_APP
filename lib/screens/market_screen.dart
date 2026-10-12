@@ -40,6 +40,7 @@ class _MarketScreenState extends State<MarketScreen> {
   bool _isLoading = true;
   late StreamSubscription _socketSub;
   StreamSubscription? _stockSub;
+  Timer? _debounceRefresh;
 
   // Category scroll controller for indicator
   final ScrollController _catScrollCtrl = ScrollController();
@@ -67,7 +68,10 @@ class _MarketScreenState extends State<MarketScreen> {
 
     SocketService().connect();
     _socketSub = SocketService().marketplaceStream.listen((event) {
-      _loadProducts();
+      _debounceRefresh?.cancel();
+      _debounceRefresh = Timer(const Duration(milliseconds: 600), () {
+        if (mounted) _loadProducts(isBackground: true);
+      });
     });
 
     _stockSub = SocketService().stockStream.listen((data) {
@@ -109,12 +113,16 @@ class _MarketScreenState extends State<MarketScreen> {
     if (mounted) setState(() => _currentUser = user);
   }
 
-  Future<void> _loadProducts() async {
-    setState(() => _isLoading = true);
+  Future<void> _loadProducts({bool isBackground = false}) async {
+    if (!isBackground && _products.isEmpty) {
+      setState(() => _isLoading = true);
+    }
     final products = await _marketService.getProductsByCategory(_selectedCategory);
     if (mounted) {
       setState(() {
-        _products = products;
+        if (products.isNotEmpty || _products.isEmpty) {
+          _products = products;
+        }
         _isLoading = false;
       });
     }
@@ -122,6 +130,7 @@ class _MarketScreenState extends State<MarketScreen> {
 
   @override
   void dispose() {
+    _debounceRefresh?.cancel();
     _socketSub.cancel();
     _stockSub?.cancel();
     _searchController.dispose();
@@ -131,9 +140,13 @@ class _MarketScreenState extends State<MarketScreen> {
 
   List<ProductModel> get _filteredProducts {
     if (_searchQuery.isNotEmpty) {
+      final q = _searchQuery.toLowerCase().trim();
       return _products.where((p) =>
-        p.title.toLowerCase().contains(_searchQuery.toLowerCase()) ||
-        p.category.toLowerCase().contains(_searchQuery.toLowerCase())
+        p.title.toLowerCase().contains(q) ||
+        p.category.toLowerCase().contains(q) ||
+        p.description.toLowerCase().contains(q) ||
+        p.sellerName.toLowerCase().contains(q) ||
+        p.tags.any((t) => t.toLowerCase().contains(q))
       ).toList();
     }
     return _products;

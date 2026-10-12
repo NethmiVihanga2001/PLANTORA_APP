@@ -10,6 +10,26 @@ import 'auth_service.dart';
 class MarketplaceService {
   static String get _baseUrl => AppConfig.baseUrl;
   final AuthService _authService = AuthService();
+  static List<ProductModel> _cachedProducts = [];
+
+  static Future<void> _saveCacheToPrefs(List<ProductModel> list) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final jsonList = list.map((p) => jsonEncode(p.toJson())).toList();
+      await prefs.setStringList('cached_marketplace_products', jsonList);
+    } catch (_) {}
+  }
+
+  static Future<List<ProductModel>> _loadCacheFromPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final jsonList = prefs.getStringList('cached_marketplace_products') ?? [];
+      if (jsonList.isNotEmpty) {
+        return jsonList.map((str) => ProductModel.fromJson(jsonDecode(str))).toList();
+      }
+    } catch (_) {}
+    return [];
+  }
 
   Future<List<ProductModel>> getProductsByCategory(String category) async {
     List<ProductModel> products = [];
@@ -23,6 +43,8 @@ class MarketplaceService {
         if (decoded != null && decoded is List && decoded.isNotEmpty) {
           final List<dynamic> data = decoded;
           products = data.map((item) => ProductModel.fromJson(item)).toList();
+          _cachedProducts = products;
+          _saveCacheToPrefs(products);
         }
       }
     } catch (e) {
@@ -30,7 +52,17 @@ class MarketplaceService {
     }
 
     if (products.isEmpty) {
-      products = MarketplaceData.getProductsByCategory('all');
+      if (_cachedProducts.isNotEmpty) {
+        products = List<ProductModel>.from(_cachedProducts);
+      } else {
+        final offlineSaved = await _loadCacheFromPrefs();
+        if (offlineSaved.isNotEmpty) {
+          products = offlineSaved;
+          _cachedProducts = offlineSaved;
+        } else {
+          products = MarketplaceData.getProductsByCategory('all');
+        }
+      }
     }
 
     try {
@@ -56,7 +88,77 @@ class MarketplaceService {
 
     final targetCat = category.toLowerCase().trim();
     if (targetCat == 'all') return products;
-    return products.where((p) => p.category.toLowerCase().trim() == targetCat).toList();
+
+    return products.where((p) {
+      final pCat = p.category.toLowerCase().trim();
+      if (pCat == targetCat) return true;
+      if (p.tags.any((t) => t.toLowerCase().trim() == targetCat)) return true;
+
+      final title = p.title.toLowerCase();
+      final desc = p.description.toLowerCase();
+
+      if (targetCat == 'herbal') {
+        return pCat.contains('herb') ||
+            p.tags.any((t) => t.contains('herb')) ||
+            title.contains('karapincha') ||
+            title.contains('turmeric') ||
+            title.contains('turemeric') ||
+            title.contains('kaha') ||
+            title.contains('kahabiliya') ||
+            title.contains('pol pala') ||
+            title.contains('curry') ||
+            title.contains('gotu kola') ||
+            title.contains('aloe') ||
+            desc.contains('herbal') ||
+            desc.contains('leaf');
+      }
+      if (targetCat == 'medicinal') {
+        return pCat.contains('med') ||
+            p.tags.any((t) => t.contains('med')) ||
+            title.contains('karapincha') ||
+            title.contains('turmeric') ||
+            title.contains('turemeric') ||
+            title.contains('kaha') ||
+            title.contains('kahabiliya') ||
+            title.contains('pol pala') ||
+            title.contains('neem') ||
+            title.contains('aloe') ||
+            title.contains('komarika') ||
+            desc.contains('medicinal');
+      }
+      if (targetCat == 'culinary') {
+        return pCat.contains('culin') ||
+            p.tags.any((t) => t.contains('culin')) ||
+            title.contains('karapincha') ||
+            title.contains('curry') ||
+            title.contains('turmeric') ||
+            title.contains('turemeric') ||
+            title.contains('chilli') ||
+            title.contains('miris');
+      }
+      if (targetCat == 'outdoor') {
+        return pCat.contains('outdoor') || p.tags.any((t) => t.contains('outdoor'));
+      }
+      if (targetCat == 'indoor') {
+        return pCat.contains('indoor') || p.tags.any((t) => t.contains('indoor'));
+      }
+      if (targetCat == 'rare') {
+        return pCat.contains('rare') || p.tags.any((t) => t.contains('rare'));
+      }
+      if (targetCat == 'aromatic') {
+        return pCat.contains('aromatic') || p.tags.any((t) => t.contains('aromatic'));
+      }
+      if (targetCat == 'tea') {
+        return pCat.contains('tea') || p.tags.any((t) => t.contains('tea'));
+      }
+      if (targetCat == 'seed') {
+        return pCat.contains('seed') || p.tags.any((t) => t.contains('seed'));
+      }
+      if (targetCat == 'tool') {
+        return pCat.contains('tool') || p.tags.any((t) => t.contains('tool'));
+      }
+      return false;
+    }).toList();
   }
 
   Future<List<ProductModel>> getProductsBySeller(String sellerId) async {

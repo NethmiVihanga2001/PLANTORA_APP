@@ -37,6 +37,11 @@ class SocketService {
       'transports': ['websocket', 'polling'],
       'extraHeaders': AppConfig.defaultHeaders,
       'autoConnect': false,
+      'reconnection': true,
+      'reconnectionAttempts': 9999,
+      'reconnectionDelay': 2000,
+      'reconnectionDelayMax': 5000,
+      'timeout': 30000,
     });
 
     socket!.connect();
